@@ -199,6 +199,12 @@ export async function resolveOpenReviewRequesterAgent(
     case when ${activityLog.details} -> '_previous' ->> 'status' is not null
       then ${activityLog.details} ->> 'status' end
   )`;
+  // Only real transitions count; a preserved status is re-logged with from = to.
+  const fromStatus = sql<string | null>`coalesce(
+    ${activityLog.details} -> 'changes' -> 'status' ->> 'from',
+    ${activityLog.details} ->> 'fromStatus',
+    ${activityLog.details} -> '_previous' ->> 'status'
+  )`;
   const latest = await db
     .select({ actorType: activityLog.actorType, actorId: activityLog.actorId, target: targetStatus })
     .from(activityLog)
@@ -207,6 +213,7 @@ export async function resolveOpenReviewRequesterAgent(
       eq(activityLog.entityType, "issue"),
       eq(activityLog.entityId, issue.id),
       sql`${targetStatus} is not null and ${targetStatus} <> 'in_progress'`,
+      sql`${targetStatus} is distinct from ${fromStatus}`,
     ))
     .orderBy(desc(activityLog.createdAt), desc(activityLog.id))
     .limit(1)

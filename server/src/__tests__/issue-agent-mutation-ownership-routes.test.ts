@@ -1962,6 +1962,19 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("rechecks the review policy change ban against the row-locked issue", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ reviewPolicy: "anyone" }));
+    mockIssueService.getByIdForUpdate.mockResolvedValue(makeIssue({ reviewPolicy: "not_creator" }));
+
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ reviewPolicy: "anyone", title: "Relax" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.details?.code).toBe("review_policy_denied");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("blocks recovery resolution from completing a review-gated issue outside in_review", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({
       status: "in_progress",

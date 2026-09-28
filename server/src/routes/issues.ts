@@ -13655,6 +13655,17 @@ export function issueRoutes(
           actor: { type: actor.actorType, id: actor.actorId },
           nextStatus: updateFields.status,
         });
+        if (
+          lockedPolicyChangeRequested &&
+          actor.actorType === "agent" &&
+          lockedExisting.reviewPolicy != null &&
+          lockedExisting.reviewPolicy !== "anyone"
+        ) {
+          throw forbidden("Agents cannot change a restrictive review policy.", {
+            code: "review_policy_denied",
+            policy: lockedExisting.reviewPolicy,
+          });
+        }
         return true;
       };
       const persistReviewTransitionActivity = async (
@@ -17727,6 +17738,17 @@ export function issueRoutes(
           actorAgentId: actor.agentId ?? null,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
         };
+        // An approval comment is a review verdict, so it obeys the review policy.
+        if (
+          updatePatch.status === "done" &&
+          currentIssue.reviewPolicy != null &&
+          currentIssue.reviewPolicy !== "anyone"
+        ) {
+          await assertIssueReviewVerdictActorAllowed(db, {
+            issue: currentIssue,
+            actor: { type: actor.actorType, id: actor.actorId },
+          });
+        }
 
         const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
         const commentOptions = {

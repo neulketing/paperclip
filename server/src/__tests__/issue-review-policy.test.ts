@@ -122,6 +122,24 @@ describeEmbeddedPostgres("issue review verdict policy", () => {
     });
   }
 
+  it("keeps the review cycle open across a preserved in_review decision", async () => {
+    const seeded = await seedReview("not_creator");
+    await logStatus(seeded, { type: "agent", id: seeded.requesterAgentId }, move("in_progress", "in_review"), new Date(1_000));
+    await logStatus(seeded, { type: "system", id: "native" }, { fromStatus: "in_review", toStatus: "in_review" }, new Date(2_000));
+    await logStatus(seeded, { type: "agent", id: seeded.peerAgentId }, move("in_review", "in_progress"), new Date(3_000));
+
+    await expect(completeAsAgent(seeded, seeded.peerAgentId)).resolves.toBeUndefined();
+  });
+
+  it("blocks completion after a reviewer rejected the work back to todo", async () => {
+    const seeded = await seedReview("not_creator");
+    await logStatus(seeded, { type: "agent", id: seeded.requesterAgentId }, move("in_progress", "in_review"), new Date(1_000));
+    await logStatus(seeded, { type: "agent", id: seeded.peerAgentId }, move("in_review", "todo"), new Date(2_000));
+    await logStatus(seeded, { type: "agent", id: seeded.requesterAgentId }, move("todo", "in_progress"), new Date(3_000));
+
+    await expect(completeAsAgent(seeded, seeded.peerAgentId)).rejects.toMatchObject({ status: 403 });
+  });
+
   it("blocks completion when a later reopen closed the review cycle", async () => {
     const seeded = await seedReview("not_creator");
     await logStatus(seeded, { type: "agent", id: seeded.peerAgentId }, move("in_progress", "in_review"), new Date(1_000));
