@@ -320,6 +320,7 @@ import {
   assertIssueReviewVerdictActorAllowed,
   isIssueReviewVerdictInteraction,
   resolveIssueReviewRequester,
+  assertAgentCompletionGoesThroughReview,
 } from "../services/issue-review-policy.js";
 import {
   evaluateIssueThreadInteractionResolverAudience,
@@ -12926,6 +12927,12 @@ export function issueRoutes(
           reviewPolicy: existing.reviewPolicy,
         });
       }
+      assertAgentCompletionGoesThroughReview({
+        actor: { type: actor.actorType, id: actor.actorId },
+        currentStatus: existing.status,
+        nextStatus: updateFields.status,
+        reviewPolicy: existing.reviewPolicy,
+      });
       const shouldCancelActiveRunForCancelledStatus =
         existing.status !== "cancelled" && updateFields.status === "cancelled";
       if (resumeRequested === true && !commentBody) {
@@ -13625,6 +13632,12 @@ export function issueRoutes(
             reviewPolicy: lockedExisting.reviewPolicy,
           });
         }
+        assertAgentCompletionGoesThroughReview({
+          actor: { type: actor.actorType, id: actor.actorId },
+          currentStatus: lockedExisting.status,
+          nextStatus: updateFields.status,
+          reviewPolicy: lockedExisting.reviewPolicy,
+        });
         return true;
       };
       const persistReviewTransitionActivity = async (

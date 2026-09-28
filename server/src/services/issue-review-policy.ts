@@ -145,3 +145,31 @@ export async function assertIssueReviewVerdictActorAllowed(
     },
   );
 }
+
+/**
+ * A review policy only means something if work reaches `done` through
+ * `in_review`. Without this guard an agent can PATCH in_progress -> done and
+ * skip the verdict check entirely, because that check only fires on
+ * in_review -> done.
+ */
+export function assertAgentCompletionGoesThroughReview(input: {
+  actor: IssueReviewVerdictActor;
+  currentStatus: string;
+  nextStatus: unknown;
+  reviewPolicy?: IssueReviewPolicy | null;
+}): void {
+  const policy = input.reviewPolicy ?? "anyone";
+  if (policy === "anyone") return;
+  if (input.actor.type !== "agent") return;
+  if (input.nextStatus !== "done") return;
+  if (input.currentStatus === "in_review" || input.currentStatus === "done") return;
+  throw forbidden(
+    `Review policy \`${policy}\` requires moving the issue to \`in_review\` before it can be marked done.`,
+    {
+      code: "review_policy_denied",
+      policy,
+      allowedActor: "reviewer_after_in_review",
+      remediation: "Set the issue status to `in_review` with your report; a reviewer will close it.",
+    },
+  );
+}
