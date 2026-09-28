@@ -1911,6 +1911,28 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("rejects the assignee moving a closed issue back open without explicit follow-up intent", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "done" }));
+
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review", comment: "Final report" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toContain("already closed");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("lets the assignee comment on a closed issue without a status change", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "done" }));
+
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "Final report" });
+
+    expect(res.status, JSON.stringify(res.body)).not.toBe(409);
+  });
+
   it("keeps configured review policy authoritative during recovery resolution", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({
       status: "in_review",

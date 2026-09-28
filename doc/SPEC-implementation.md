@@ -276,6 +276,7 @@ Invariants:
 - accepting a fresh `request_confirmation` for the current issue's `plan` revision changes `work_mode = planning` to `work_mode = standard` in the same transaction as the accepted interaction; the existing agent-return transition also moves an eligible `in_review` issue to `todo` without changing its agent owner
 - while a restrictive review policy is stored, changing it requires an actor who is allowed by that row-locked policy
 - the transition into `in_review` and its requester activity record commit atomically, including transitions without an explicit review-interaction binding
+- an agent cannot move a `done | cancelled` issue to an open status without explicit `resume` or `reopen` intent; a run that finishes after the issue was closed cannot revert the closure
 - terminal states: `done | cancelled`
 
 ## 7.7 `issue_comments`

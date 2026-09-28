@@ -13016,6 +13016,24 @@ export function issueRoutes(
       ) {
         return;
       }
+      // A closed issue stays closed unless someone explicitly asks for
+      // follow-up. Otherwise a run that was still finishing when the board
+      // closed the issue re-opens it with its stale final status.
+      if (
+        req.actor.type === "agent" &&
+        isClosed &&
+        typeof updateFields.status === "string" &&
+        !isClosedIssueStatus(updateFields.status) &&
+        resumeRequested !== true &&
+        reopenRequested !== true
+      ) {
+        res.status(409).json({
+          error:
+            "Issue is already closed. Post your comment without a status change, or send resume: true to request follow-up.",
+          details: { issueId: existing.id, status: existing.status },
+        });
+        return;
+      }
       const scheduledRetryForHumanComment =
         shouldHumanCommentResumeInProgressScheduledRetry({
           hasComment: !!commentBody,
