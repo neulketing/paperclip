@@ -1089,7 +1089,7 @@ describe.skipIf(!gnuTar)("automatic unsafe workspace export recovery", () => {
   afterEach(async () => {
     await Promise.all(cleanupDirs.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
   });
-  it.each(["/usr/bin/pnpm", "../../outside.txt", "ambiguous"])("exports regular files when a link is unsafe: %s", async (target) => {
+  it.each(["/usr/bin/pnpm", "../../outside.txt", "ambiguous"])("preserves files and safe links when a link is unsafe: %s", async (target) => {
     const root = await fs.mkdtemp("/tmp/paperclip-export-recovery-");
     cleanupDirs.push(root);
     const remoteDir = path.join(root, "remote");
@@ -1097,6 +1097,7 @@ describe.skipIf(!gnuTar)("automatic unsafe workspace export recovery", () => {
     const bin = path.join(root, "bin");
     await fs.mkdir(path.join(remoteDir, "nested"), { recursive: true });
     await fs.mkdir(path.join(remoteDir, "cache"));
+    await fs.mkdir(path.join(remoteDir, "empty"));
     await fs.mkdir(bin);
     await fs.symlink(gnuTar!, path.join(bin, "tar"));
     await fs.writeFile(path.join(root, "outside.txt"), "private bytes");
@@ -1115,14 +1116,15 @@ describe.skipIf(!gnuTar)("automatic unsafe workspace export recovery", () => {
     Object.assign(sandbox.fs, { downloadFiles: downloads, deleteFile: (file: string) => fs.rm(file, { force: true }) });
     await expect(performSyncOut({ sandbox: sandbox as never, remoteDir, timeoutSeconds: 30, onArchiveRecovery: recovery,
       operations: [{ operationId: "export", files: [{ sourcePath: remoteDir, targetPath: output, kind: "directory", exclude: ["cache"] }] }],
-    })).resolves.toMatchObject({ operations: [{ operationId: "export", filesTransferred: 2 }] });
+    })).resolves.toMatchObject({ operations: [{ operationId: "export", filesTransferred: 3 }] });
     expect(downloads).toHaveBeenCalledTimes(2);
     expect(recovery).toHaveBeenCalledOnce();
     expect(await fs.readFile(path.join(output, "nested", "--safe [file].txt"), "utf8")).toBe("saved work");
     expect((await fs.stat(path.join(output, "nested", "--safe [file].txt"))).mode & 0o777).toBe(0o600);
     expect(await fs.readFile(path.join(output, "hard-link"), "utf8")).toBe("saved work");
     await expect(fs.lstat(path.join(output, "nested", linkName))).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(fs.lstat(path.join(output, "safe-link"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readlink(path.join(output, "safe-link"))).toBe("nested/--safe [file].txt");
+    expect(await fs.readdir(path.join(output, "empty"))).toEqual([]);
     await expect(fs.stat(path.join(output, "cache", "ignored.txt"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(await fs.readFile(path.join(root, "outside.txt"), "utf8")).toBe("private bytes");
     expect((await fs.lstat(path.join(remoteDir, "nested", linkName))).isSymbolicLink()).toBe(true);

@@ -1,3 +1,4 @@
+import { hasNativeWorkspaceExportResume, settleNativeWorkspaceExportResume } from "./native-runtime/native-workspace-export-resume.js";
 import { restoreNativeWorkspaceBestEffort } from "./native-runtime/native-workspace-best-effort.js";
 import {
   withNativeWorkspaceFinalizationOwnership,
@@ -18574,7 +18575,7 @@ export function heartbeatService(
       // path uses the provider and configuration recorded on the lease first;
       // the environment is lifecycle context and only a legacy fallback.
       const isOrphanEphemeralLease = lease.leasePolicy === "ephemeral";
-      const useRecordedTeardown = isOrphanEphemeralLease || !environment;
+      const useRecordedTeardown = isOrphanEphemeralLease || !environment || hasNativeWorkspaceExportResume(lease);
 
       // Do not consume a finite cleanup attempt while the provider plugin is
       // briefly unavailable. A plugin worker restart, a plugin reload, or a
@@ -18643,7 +18644,9 @@ export function heartbeatService(
             environment,
             lease,
           });
-          const released = await environmentsSvc.releaseLease(lease.id, "expired", {
+          const released = hasNativeWorkspaceExportResume(lease)
+            ? await settleNativeWorkspaceExportResume(db, lease, { attemptId: claimed, receipt, status: "expired" })
+            : await environmentsSvc.releaseLease(lease.id, "expired", {
             expectedPendingCleanupAttemptId: claimed,
             cleanupStatus: "success",
             failureReason: "pending_cleanup_retry",

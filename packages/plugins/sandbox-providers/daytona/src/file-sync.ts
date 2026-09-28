@@ -1197,16 +1197,25 @@ async function syncOutDirectoryMapping(input: {
       `if [ "$#" -eq 0 ]; then dd if=/dev/zero of=${shellQuote(remoteTar)} bs=1024 count=1; ` +
         `else tar -c --no-xattrs ${mapping.followSymlinks ? "-h " : ""}${excludeFlags} -f ${shellQuote(remoteTar)} -- "$@"; fi`,
     ].join(" && ");
-    // A second export omits every link, without following or deleting it. NUL
-    // names and --null prevent filenames from becoming tar options. Hard links
-    // become ordinary file bytes. The resulting archive is still untrusted and
-    // must pass the same host-side confinement check before extraction.
+    // Rebuild the archive with files, directories, and relative links whose
+    // resolved targets remain inside this mapping. Nothing is deleted or
+    // dereferenced. Host validation still checks the rebuilt archive, including
+    // links changed by the sandbox between enumeration and tar creation.
     const prunePaths = excludes.flatMap((entry) => [
       `-path ${shellQuote(`./${entry}`)}`, `-path ${shellQuote(`*/${entry}`)}`,
     ]).join(" -o ");
-    const regularFilesScript = [
+    const filterLinks = [
+      ...canonicalizerPreamble(shellQuote(mapping.sourcePath)),
+      'for _pc_link do',
+      '  _pc_target=$(readlink -- "$_pc_link") || continue;',
+      '  case "$_pc_target" in /*) continue ;; esac;',
+      '  _pc_real=$(_pc_resolve "$_pc_link" 2>/dev/null) || continue;',
+      `  case "$_pc_real/" in "$_pc_root"/*) printf '%s\\0' "$_pc_link" ;; esac;`,
+      'done',
+    ].join("\n");
+    const confinedEntriesScript = [
       `cd ${shellQuote(mapping.sourcePath)}`,
-      `find . \\( ${prunePaths} \\) -prune -o -type f -print0 > ${shellQuote(remoteList)}`,
+      `find . -mindepth 1 \\( ${prunePaths} \\) -prune -o -type l -exec sh -c ${shellQuote(filterLinks)} sh {} + -o \\( -type f -o -type d \\) -print0 > ${shellQuote(remoteList)}`,
       `tar -c --no-xattrs --hard-dereference --no-recursion --null ${excludeFlags} -f ${shellQuote(remoteTar)} -T ${shellQuote(remoteList)}`,
     ].join(" && ");
 
@@ -1214,7 +1223,7 @@ async function syncOutDirectoryMapping(input: {
     let bytesTransferred = 0;
     try {
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        await assertSandboxCommandOk(sandbox, `sh -c ${shellQuote(attempt === 0 ? tarScript : regularFilesScript)}`, timeoutSeconds, "syncOut tar");
+        await assertSandboxCommandOk(sandbox, `sh -c ${shellQuote(attempt === 0 ? tarScript : confinedEntriesScript)}`, timeoutSeconds, "syncOut tar");
         guardRoundTrips += 1;
         // `transfer` span: the real byte download — `sandbox.fs.downloadFiles`.
         const responses = await withProviderSpan({

@@ -1722,7 +1722,7 @@ users opt in individually after the upgrade.
 ### Unsafe native workspace exports
 
 An unsafe workspace link does not fail an accepted native task result. Retry
-export automatically with regular files only and keep archive confinement in
+export automatically with confined entries only and keep archive confinement in
 place. If the export remains unsafe, omit it and finish the saved result under
 normal completion rules. Record diagnostics only in run logs; do not add a task
 warning or manual repair action. See `native-workspace-finalization-recovery.md`.

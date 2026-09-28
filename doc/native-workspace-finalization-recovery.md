@@ -74,10 +74,10 @@ An unsafe link in a native workspace must not fail a completed task or require
 an operator to repair a sandbox. The accepted agent result remains authoritative.
 
 Daytona validates every exported archive before extraction. If validation rejects
-an archive, export once more using regular files only. The fallback does not
-follow or delete symlinks. It omits all symlinks (including safe ones), stores
-hard-linked files as ordinary bytes, and preserves directory exclusions. It also
-omits empty directories. The second archive passes the same confinement checks.
+an archive, export once more using files, directories, and relative symlinks
+whose resolved targets stay inside the workspace. The fallback does not follow
+or delete symlinks. It omits unsafe or unresolvable links, stores hard-linked
+files as ordinary bytes, and preserves directory exclusions and empty directories. The second archive passes the same confinement checks.
 A fixed informational message records the fallback in the provider log.
 
 If native copyback still rejects the archive or its source confinement check,
@@ -94,3 +94,8 @@ extracted. No host path or link target is copied into the informational run even
 
 This replaces the former manual export-repair endpoint and task card. There is
 no operator repair workflow for unsafe archives.
+
+Pending stop-only cleanup intents from the former manual-repair flow still use
+the exact recorded provider and verified stop receipt. They cannot fall through
+to destructive teardown. This compatibility path creates no new task warning,
+repair action, or provider turn.
