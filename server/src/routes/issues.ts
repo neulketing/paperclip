@@ -9448,6 +9448,11 @@ export function issueRoutes(
               actor: { type: actor.actorType, id: actor.actorId },
             });
           }
+          await assertAgentCompletionGoesThroughReview(tx as unknown as Db, {
+            issue: lockedIssue,
+            actor: { type: actor.actorType, id: actor.actorId },
+            nextStatus: sourceIssueStatus,
+          });
 
           const updateFields: Record<string, unknown> = {
             status: sourceIssueStatus,

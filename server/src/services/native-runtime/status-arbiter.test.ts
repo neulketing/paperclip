@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { NativeEvidenceAssessment } from "./evidence-classifier.js";
-import { arbitrateNativeStatus } from "./status-arbiter.js";
+import { arbitrateNativeStatus, gateNativeDecisionOnReviewPolicy } from "./status-arbiter.js";
 
 function assessment(
   overrides: Partial<NativeEvidenceAssessment> = {},
@@ -134,6 +134,17 @@ describe("native status authority", () => {
       .toMatchObject({ statusAction: "in_review" });
     expect(arbitrate({ reviewPolicy: "human_only", reviewRequesterAgentId: "worker" }))
       .toMatchObject({ statusAction: "in_review" });
+  });
+
+  it("gates reconciled done decisions on the review policy", () => {
+    const done = arbitrate();
+    expect(gateNativeDecisionOnReviewPolicy(done, { reviewPolicy: "human_only", agentId: "agent" }))
+      .toMatchObject({ statusAction: "in_review", reasonCode: "review_policy_verdict_required" });
+    expect(gateNativeDecisionOnReviewPolicy(done, { reviewPolicy: "not_creator", reviewRequesterAgentId: "worker", agentId: "agent" }))
+      .toBe(done);
+    expect(gateNativeDecisionOnReviewPolicy(done, { reviewPolicy: null, agentId: "agent" })).toBe(done);
+    const inProgress = arbitrate({ terminalState: "failed" });
+    expect(gateNativeDecisionOnReviewPolicy(inProgress, { reviewPolicy: "human_only", agentId: "agent" })).toBe(inProgress);
   });
 
   it("marks done only from successful finalization and complete durable evidence", () => {

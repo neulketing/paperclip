@@ -24,22 +24,6 @@ export async function resolveIssueReviewRequester(
   db: Db,
   issue: ReviewPolicyIssue,
 ): Promise<IssueReviewRequester | null> {
-  const requester = await resolveInReviewTransitionRequester(db, issue);
-  if (requester) return requester;
-  if (issue.createdByAgentId && !issue.createdByUserId) {
-    return { type: "agent", id: issue.createdByAgentId, reviewInteractionId: null };
-  }
-  if (issue.createdByUserId && !issue.createdByAgentId) {
-    return { type: "user", id: issue.createdByUserId, reviewInteractionId: null };
-  }
-  return null;
-}
-
-/** The actor that last moved the issue into `in_review`, without the creator fallback. */
-export async function resolveInReviewTransitionRequester(
-  db: Db,
-  issue: ReviewPolicyIssue,
-): Promise<IssueReviewRequester | null> {
   const transition = await db
     .select({
       actorType: activityLog.actorType,
@@ -75,6 +59,12 @@ export async function resolveInReviewTransitionRequester(
       ? transition.details.reviewInteractionId
       : null;
     return { type: transition.actorType, id: transition.actorId, reviewInteractionId };
+  }
+  if (issue.createdByAgentId && !issue.createdByUserId) {
+    return { type: "agent", id: issue.createdByAgentId, reviewInteractionId: null };
+  }
+  if (issue.createdByUserId && !issue.createdByAgentId) {
+    return { type: "user", id: issue.createdByUserId, reviewInteractionId: null };
   }
   return null;
 }
@@ -161,7 +151,7 @@ export async function assertIssueReviewVerdictActorAllowed(
  * review. Without this guard an agent can PATCH in_progress -> done and skip
  * the verdict check entirely, because that check only fires on
  * in_review -> done. A reviewer agent's own checkout moves the issue back to
- * in_progress, so under `not_creator` an agent other than the recorded review
+ * in_progress, so under `not_creator` an agent other than the open review
  * requester may still complete it.
  */
 export async function assertAgentCompletionGoesThroughReview(
@@ -178,8 +168,8 @@ export async function assertAgentCompletionGoesThroughReview(
   if (input.nextStatus !== "done") return;
   if (input.issue.status === "in_review" || input.issue.status === "done") return;
   if (policy === "not_creator") {
-    const requester = await resolveInReviewTransitionRequester(db, input.issue);
-    if (requester && !(requester.type === input.actor.type && requester.id === input.actor.id)) return;
+    const requesterAgentId = await resolveOpenReviewRequesterAgent(db, input.issue);
+    if (requesterAgentId && requesterAgentId !== input.actor.id) return;
   }
   throw forbidden(
     `Review policy \`${policy}\` requires moving the issue to \`in_review\` before it can be marked done.`,
@@ -190,4 +180,36 @@ export async function assertAgentCompletionGoesThroughReview(
       remediation: "Set the issue status to `in_review` with your report; a reviewer will close it.",
     },
   );
+}
+
+/**
+ * The agent whose `in_review` request is still the open review cycle. A
+ * reviewer's checkout moves the issue from `in_review` to `in_progress`, so
+ * those moves are skipped; any other later status change (reopen, board move,
+ * return to todo) closes the cycle and yields null. A board-made or
+ * system-made `in_review` yields null too, because no agent asked for review.
+ */
+export async function resolveOpenReviewRequesterAgent(
+  db: Db,
+  issue: { id: string; companyId: string },
+): Promise<string | null> {
+  const targetStatus = sql<string | null>`coalesce(
+    ${activityLog.details} -> 'changes' -> 'status' ->> 'to',
+    ${activityLog.details} ->> 'toStatus',
+    case when ${activityLog.details} -> '_previous' ->> 'status' is not null
+      then ${activityLog.details} ->> 'status' end
+  )`;
+  const latest = await db
+    .select({ actorType: activityLog.actorType, actorId: activityLog.actorId, target: targetStatus })
+    .from(activityLog)
+    .where(and(
+      eq(activityLog.companyId, issue.companyId),
+      eq(activityLog.entityType, "issue"),
+      eq(activityLog.entityId, issue.id),
+      sql`${targetStatus} is not null and ${targetStatus} <> 'in_progress'`,
+    ))
+    .orderBy(desc(activityLog.createdAt), desc(activityLog.id))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return latest?.target === "in_review" && latest.actorType === "agent" ? latest.actorId : null;
 }

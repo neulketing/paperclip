@@ -1,3 +1,4 @@
+import { resolveOpenReviewRequesterAgent } from "../issue-review-policy.js";
 import { dismissAutomaticCompletionReviews, decisionHasRetiredAutomaticReview } from "./automatic-completion-reviews.js";
 import { logger } from "../../middleware/logger.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -50,6 +51,7 @@ import {
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
   type NativeAuthoritativeIssueStatus,
   type NativeStatusDecision,
+  gateNativeDecisionOnReviewPolicy,
 } from "./status-arbiter.js";
 
 export type NativeReconciliationFacts = {
@@ -789,7 +791,7 @@ export async function reconcileNativeFinalizations(
           assessment: reassessment,
           supersedesAssessmentId: assessment.id,
         });
-        const decision = retiredAutomaticReview && currentIssue
+        const proposedDecision = retiredAutomaticReview && currentIssue
           ? resolveNativeFinalizerStatus({
               assessment: reassessment, terminalState: "succeeded", workspaceFinalizeStatus: "succeeded",
               governanceGate: await pendingNativeGovernance({ db, companyId: row.companyId, issueId: row.issueId,
@@ -802,6 +804,22 @@ export async function reconcileNativeFinalizations(
           : resolveNativeReconciliationStatus({
               facts, priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus, agentId: row.agentId,
             });
+        const reviewIssue = proposedDecision.statusAction === "done"
+          ? currentIssue ?? await db.select().from(issues)
+            .where(and(eq(issues.id, row.issueId), eq(issues.companyId, row.companyId)))
+            .then((entries) => entries[0])
+          : null;
+        const decision = reviewIssue
+          ? gateNativeDecisionOnReviewPolicy(proposedDecision, {
+              reviewPolicy: reviewIssue.reviewPolicy,
+              reviewRequesterAgentId: reviewIssue.reviewPolicy === "not_creator"
+                ? await resolveOpenReviewRequesterAgent(db, reviewIssue)
+                : null,
+              reviewOwnerUserId: reviewIssue.responsibleUserId ?? reviewIssue.createdByUserId,
+              agentId: row.agentId,
+              summary: reassessment?.summary ?? null,
+            })
+          : proposedDecision;
         let committed: Awaited<ReturnType<typeof commitNativeStatusDecision>>;
         try {
           committed = await commitNativeStatusDecision({

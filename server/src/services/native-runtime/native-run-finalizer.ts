@@ -1,4 +1,4 @@
-import { resolveInReviewTransitionRequester } from "../issue-review-policy.js";
+import { resolveOpenReviewRequesterAgent } from "../issue-review-policy.js";
 import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
@@ -1215,9 +1215,7 @@ export async function finalizeNativeRun(input: {
       reviewPolicy: authoritativeIssue.reviewPolicy ?? null,
       reviewRequesterAgentId:
         authoritativeIssue.reviewPolicy === "not_creator"
-          ? await resolveInReviewTransitionRequester(input.db, authoritativeIssue).then(
-              (requester) => (requester?.type === "agent" ? requester.id : null),
-            )
+          ? await resolveOpenReviewRequesterAgent(input.db, authoritativeIssue)
           : null,
       agentId: run.agentId,
       priorIssueStatus: authoritativeStatus(authoritativeIssue.status),

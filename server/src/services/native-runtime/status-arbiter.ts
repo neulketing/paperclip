@@ -294,34 +294,8 @@ export function arbitrateNativeStatus(input: {
     input.assessment.attentionRequests.length === 0 &&
     !input.assessment.hasBlockingRemainingWork;
   const complete = evidenceComplete || policyClaimComplete;
-  const reviewerMayComplete =
-    input.reviewPolicy === "not_creator" &&
-    input.reviewRequesterAgentId != null &&
-    input.reviewRequesterAgentId !== input.agentId;
-  if (
-    complete &&
-    input.reviewPolicy != null &&
-    input.reviewPolicy !== "anyone" &&
-    !reviewerMayComplete
-  ) {
-    return {
-      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
-      statusAction: "in_review",
-      toStatus: "in_review",
-      reasonCode: "review_policy_verdict_required",
-      unblockDescriptor: null,
-      effects: [{
-        kind: "bind_reviewer",
-        requestKey: "review-policy",
-        prompt: `Review policy \`${input.reviewPolicy}\` requires a reviewer verdict before this issue is done.`,
-        detailsMarkdown: input.assessment.summary,
-        ownerUserId: input.reviewOwnerUserId ?? null,
-        ownerAgentId: null,
-      }],
-    };
-  }
   if (complete) {
-    return {
+    return gateNativeDecisionOnReviewPolicy({
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "done",
       toStatus: "done",
@@ -330,7 +304,7 @@ export function arbitrateNativeStatus(input: {
         : "completion_contract_satisfied",
       unblockDescriptor: null,
       effects: [{ kind: "release_checkout" }],
-    };
+    }, { ...input, summary: input.assessment.summary });
   }
   // A completion claim is not a request for human approval. Only a concrete,
   // explicitly reported attention request may create a review interaction.
@@ -519,5 +493,47 @@ export function arbitrateNativeStatus(input: {
         agentId: input.agentId,
       },
     ],
+  };
+}
+
+/**
+ * A restrictive review policy means only a review can complete the issue.
+ * Under `not_creator` an agent other than the open review requester may
+ * complete it; every other native `done` is routed to `in_review` with a
+ * bound reviewer. Apply this to every native decision before it is committed.
+ */
+export function gateNativeDecisionOnReviewPolicy(
+  decision: NativeStatusDecision,
+  input: {
+    reviewPolicy?: "anyone" | "not_creator" | "human_only" | null;
+    reviewRequesterAgentId?: string | null;
+    reviewOwnerUserId?: string | null;
+    agentId: string;
+    summary?: string | null;
+  },
+): NativeStatusDecision {
+  if (decision.statusAction !== "done") return decision;
+  if (input.reviewPolicy == null || input.reviewPolicy === "anyone") return decision;
+  if (
+    input.reviewPolicy === "not_creator" &&
+    input.reviewRequesterAgentId != null &&
+    input.reviewRequesterAgentId !== input.agentId
+  ) {
+    return decision;
+  }
+  return {
+    policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+    statusAction: "in_review",
+    toStatus: "in_review",
+    reasonCode: "review_policy_verdict_required",
+    unblockDescriptor: null,
+    effects: [{
+      kind: "bind_reviewer",
+      requestKey: "review-policy",
+      prompt: `Review policy \`${input.reviewPolicy}\` requires a reviewer verdict before this issue is done.`,
+      detailsMarkdown: input.summary ?? null,
+      ownerUserId: input.reviewOwnerUserId ?? null,
+      ownerAgentId: null,
+    }],
   };
 }

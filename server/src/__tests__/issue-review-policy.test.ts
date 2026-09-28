@@ -95,6 +95,54 @@ describeEmbeddedPostgres("issue review verdict policy", () => {
     })).resolves.toBeUndefined();
   });
 
+  async function logStatus(
+    seeded: Awaited<ReturnType<typeof seedReview>>,
+    actor: { type: "agent" | "user" | "system"; id: string },
+    details: Record<string, unknown>,
+    at: Date,
+  ) {
+    await db.insert(activityLog).values({
+      companyId: seeded.companyId,
+      actorType: actor.type,
+      actorId: actor.id,
+      agentId: actor.type === "agent" ? actor.id : null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: seeded.issue.id,
+      details,
+      createdAt: at,
+    });
+  }
+  const move = (from: string, to: string) => ({ status: to, changes: { status: { from, to } } });
+  function completeAsAgent(seeded: Awaited<ReturnType<typeof seedReview>>, agentId: string) {
+    return assertAgentCompletionGoesThroughReview(db, {
+      issue: { ...seeded.issue, status: "in_progress" },
+      actor: { type: "agent", id: agentId },
+      nextStatus: "done",
+    });
+  }
+
+  it("blocks completion when a later reopen closed the review cycle", async () => {
+    const seeded = await seedReview("not_creator");
+    await logStatus(seeded, { type: "agent", id: seeded.peerAgentId }, move("in_progress", "in_review"), new Date(1_000));
+    await logStatus(seeded, { type: "user", id: "board" }, move("done", "todo"), new Date(2_000));
+    await logStatus(seeded, { type: "agent", id: seeded.requesterAgentId }, move("todo", "in_progress"), new Date(3_000));
+
+    await expect(completeAsAgent(seeded, seeded.requesterAgentId)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("blocks completion when no agent requested the open review", async () => {
+    const seeded = await seedReview("not_creator");
+    await logStatus(seeded, { type: "user", id: "board" }, move("in_progress", "in_review"), new Date(1_000));
+    await expect(completeAsAgent(seeded, seeded.requesterAgentId)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("blocks completion when only the native system moved the issue to in_review", async () => {
+    const native = await seedReview("not_creator");
+    await logStatus(native, { type: "system", id: "native" }, { fromStatus: "in_progress", toStatus: "in_review" }, new Date(1_000));
+    await expect(completeAsAgent(native, native.peerAgentId)).rejects.toMatchObject({ status: 403 });
+  });
+
   it("lets only a non-requester agent complete a not_creator issue outside in_review", async () => {
     const seeded = await seedReview("not_creator");
     await db.insert(activityLog).values({

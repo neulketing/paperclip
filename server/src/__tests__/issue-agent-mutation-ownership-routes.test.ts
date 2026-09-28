@@ -379,6 +379,9 @@ function createRunContextDb(
         if (getTableName(table) === "issue_thread_interactions") {
           return { where: vi.fn(() => ({ limit: vi.fn(async () => []) })) };
         }
+        if (getTableName(table) === "activity_log" && "target" in selection) {
+          return { where: vi.fn(() => ({ orderBy: vi.fn(() => ({ limit: vi.fn(async () => []) })) })) };
+        }
         return buildQuery(selection, getTableName(table) === "chat_conversations", getTableName(table) === "issue_recovery_actions");
       }),
     })),
@@ -1945,6 +1948,26 @@ describe("agent issue mutation checkout ownership", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("blocks recovery resolution from completing a review-gated issue outside in_review", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+      reviewPolicy: "not_creator",
+    }));
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+      id: recoveryActionId,
+      ownerAgentId,
+    });
+
+    const res = await request(await createApp(ownerActor()))
+      .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+      .send({ actionId: recoveryActionId, outcome: "restored", sourceIssueStatus: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.details?.code).toBe("review_policy_denied");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("keeps configured review policy authoritative during recovery resolution", async () => {
