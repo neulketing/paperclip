@@ -1923,6 +1923,19 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("rechecks review-gated completion against the row-locked issue", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue());
+    mockIssueService.getByIdForUpdate.mockResolvedValue(makeIssue({ reviewPolicy: "human_only" }));
+
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", comment: "Finished" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.details?.code).toBe("review_policy_denied");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("lets an agent submit a review-gated issue to in_review", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ reviewPolicy: "human_only" }));
 

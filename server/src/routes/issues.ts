@@ -12927,11 +12927,10 @@ export function issueRoutes(
           reviewPolicy: existing.reviewPolicy,
         });
       }
-      assertAgentCompletionGoesThroughReview({
+      await assertAgentCompletionGoesThroughReview(db, {
+        issue: existing,
         actor: { type: actor.actorType, id: actor.actorId },
-        currentStatus: existing.status,
         nextStatus: updateFields.status,
-        reviewPolicy: existing.reviewPolicy,
       });
       const shouldCancelActiveRunForCancelledStatus =
         existing.status !== "cancelled" && updateFields.status === "cancelled";
@@ -13632,11 +13631,10 @@ export function issueRoutes(
             reviewPolicy: lockedExisting.reviewPolicy,
           });
         }
-        assertAgentCompletionGoesThroughReview({
+        await assertAgentCompletionGoesThroughReview(tx as unknown as Db, {
+          issue: lockedExisting,
           actor: { type: actor.actorType, id: actor.actorId },
-          currentStatus: lockedExisting.status,
           nextStatus: updateFields.status,
-          reviewPolicy: lockedExisting.reviewPolicy,
         });
         return true;
       };

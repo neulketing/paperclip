@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { activityLog, agents, companies, createDb, issues, type Db } from "@paperclipai/db";
 import { HttpError } from "../errors.js";
 import {
+  assertAgentCompletionGoesThroughReview,
   assertIssueReviewVerdictActorAllowed,
   isIssueReviewVerdictInteraction,
 } from "../services/issue-review-policy.js";
@@ -92,6 +93,42 @@ describeEmbeddedPostgres("issue review verdict policy", () => {
       issue: { id: randomUUID(), companyId: randomUUID(), reviewPolicy: null },
       actor: { type: "agent", id: randomUUID() },
     })).resolves.toBeUndefined();
+  });
+
+  it("lets only a non-requester agent complete a not_creator issue outside in_review", async () => {
+    const seeded = await seedReview("not_creator");
+    await db.insert(activityLog).values({
+      companyId: seeded.companyId,
+      actorType: "agent",
+      actorId: seeded.requesterAgentId,
+      agentId: seeded.requesterAgentId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: seeded.issue.id,
+      details: { status: "in_review", _previous: { status: "in_progress" } },
+    });
+    // The reviewer's checkout moved the issue back to in_progress.
+    const issue = { ...seeded.issue, status: "in_progress" };
+
+    await expect(assertAgentCompletionGoesThroughReview(db, {
+      issue,
+      actor: { type: "agent", id: seeded.peerAgentId },
+      nextStatus: "done",
+    })).resolves.toBeUndefined();
+    await expect(assertAgentCompletionGoesThroughReview(db, {
+      issue,
+      actor: { type: "agent", id: seeded.requesterAgentId },
+      nextStatus: "done",
+    })).rejects.toMatchObject<HttpError>({ status: 403 });
+  });
+
+  it("blocks direct agent completion when no review was ever requested", async () => {
+    const seeded = await seedReview("not_creator");
+    await expect(assertAgentCompletionGoesThroughReview(db, {
+      issue: { ...seeded.issue, status: "in_progress" },
+      actor: { type: "agent", id: seeded.peerAgentId },
+      nextStatus: "done",
+    })).rejects.toMatchObject<HttpError>({ status: 403 });
   });
 
   it("blocks the in-review requester under not_creator and admits another agent", async () => {

@@ -111,6 +111,10 @@ export function arbitrateNativeStatus(input: {
   boardResponseWaitAuthorized?: boolean;
   boardResponseWaitOrigin?: boolean;
   reviewOwnerUserId?: string | null;
+  /** A restrictive policy means only a reviewer verdict may complete the issue. */
+  reviewPolicy?: "anyone" | "not_creator" | "human_only" | null;
+  /** Agent that last moved the issue into in_review, when known. */
+  reviewRequesterAgentId?: string | null;
   /** Review decisions own task state; a reviewer's finish report cannot override them. */
   nativeReviewOutcome?: "resolved" | "pending" | "stale";
   agentId: string;
@@ -290,6 +294,32 @@ export function arbitrateNativeStatus(input: {
     input.assessment.attentionRequests.length === 0 &&
     !input.assessment.hasBlockingRemainingWork;
   const complete = evidenceComplete || policyClaimComplete;
+  const reviewerMayComplete =
+    input.reviewPolicy === "not_creator" &&
+    input.reviewRequesterAgentId != null &&
+    input.reviewRequesterAgentId !== input.agentId;
+  if (
+    complete &&
+    input.reviewPolicy != null &&
+    input.reviewPolicy !== "anyone" &&
+    !reviewerMayComplete
+  ) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "in_review",
+      toStatus: "in_review",
+      reasonCode: "review_policy_verdict_required",
+      unblockDescriptor: null,
+      effects: [{
+        kind: "bind_reviewer",
+        requestKey: "review-policy",
+        prompt: `Review policy \`${input.reviewPolicy}\` requires a reviewer verdict before this issue is done.`,
+        detailsMarkdown: input.assessment.summary,
+        ownerUserId: input.reviewOwnerUserId ?? null,
+        ownerAgentId: null,
+      }],
+    };
+  }
   if (complete) {
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,

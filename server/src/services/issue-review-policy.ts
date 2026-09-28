@@ -24,6 +24,22 @@ export async function resolveIssueReviewRequester(
   db: Db,
   issue: ReviewPolicyIssue,
 ): Promise<IssueReviewRequester | null> {
+  const requester = await resolveInReviewTransitionRequester(db, issue);
+  if (requester) return requester;
+  if (issue.createdByAgentId && !issue.createdByUserId) {
+    return { type: "agent", id: issue.createdByAgentId, reviewInteractionId: null };
+  }
+  if (issue.createdByUserId && !issue.createdByAgentId) {
+    return { type: "user", id: issue.createdByUserId, reviewInteractionId: null };
+  }
+  return null;
+}
+
+/** The actor that last moved the issue into `in_review`, without the creator fallback. */
+export async function resolveInReviewTransitionRequester(
+  db: Db,
+  issue: ReviewPolicyIssue,
+): Promise<IssueReviewRequester | null> {
   const transition = await db
     .select({
       actorType: activityLog.actorType,
@@ -59,12 +75,6 @@ export async function resolveIssueReviewRequester(
       ? transition.details.reviewInteractionId
       : null;
     return { type: transition.actorType, id: transition.actorId, reviewInteractionId };
-  }
-  if (issue.createdByAgentId && !issue.createdByUserId) {
-    return { type: "agent", id: issue.createdByAgentId, reviewInteractionId: null };
-  }
-  if (issue.createdByUserId && !issue.createdByAgentId) {
-    return { type: "user", id: issue.createdByUserId, reviewInteractionId: null };
   }
   return null;
 }
@@ -147,22 +157,30 @@ export async function assertIssueReviewVerdictActorAllowed(
 }
 
 /**
- * A review policy only means something if work reaches `done` through
- * `in_review`. Without this guard an agent can PATCH in_progress -> done and
- * skip the verdict check entirely, because that check only fires on
- * in_review -> done.
+ * A review policy only means something if work reaches `done` through a
+ * review. Without this guard an agent can PATCH in_progress -> done and skip
+ * the verdict check entirely, because that check only fires on
+ * in_review -> done. A reviewer agent's own checkout moves the issue back to
+ * in_progress, so under `not_creator` an agent other than the recorded review
+ * requester may still complete it.
  */
-export function assertAgentCompletionGoesThroughReview(input: {
-  actor: IssueReviewVerdictActor;
-  currentStatus: string;
-  nextStatus: unknown;
-  reviewPolicy?: IssueReviewPolicy | null;
-}): void {
-  const policy = input.reviewPolicy ?? "anyone";
+export async function assertAgentCompletionGoesThroughReview(
+  db: Db,
+  input: {
+    issue: ReviewPolicyIssue & { status: string };
+    actor: IssueReviewVerdictActor;
+    nextStatus: unknown;
+  },
+): Promise<void> {
+  const policy = input.issue.reviewPolicy ?? "anyone";
   if (policy === "anyone") return;
   if (input.actor.type !== "agent") return;
   if (input.nextStatus !== "done") return;
-  if (input.currentStatus === "in_review" || input.currentStatus === "done") return;
+  if (input.issue.status === "in_review" || input.issue.status === "done") return;
+  if (policy === "not_creator") {
+    const requester = await resolveInReviewTransitionRequester(db, input.issue);
+    if (requester && !(requester.type === input.actor.type && requester.id === input.actor.id)) return;
+  }
   throw forbidden(
     `Review policy \`${policy}\` requires moving the issue to \`in_review\` before it can be marked done.`,
     {

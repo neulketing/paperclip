@@ -114,6 +114,28 @@ describe("native status authority", () => {
       });
     }
   });
+  it("routes complete work on a review-gated issue to in_review instead of done", () => {
+    for (const reviewPolicy of ["human_only", "not_creator"] as const) {
+      const decision = arbitrate({ reviewPolicy, reviewOwnerUserId: "board-user" });
+      expect(decision).toMatchObject({
+        statusAction: "in_review",
+        toStatus: "in_review",
+        reasonCode: "review_policy_verdict_required",
+      });
+      expect(decision.effects).toContainEqual(expect.objectContaining({
+        kind: "bind_reviewer",
+        ownerUserId: "board-user",
+      }));
+    }
+    expect(arbitrate({ reviewPolicy: "anyone" })).toMatchObject({ statusAction: "done" });
+    expect(arbitrate({ reviewPolicy: "not_creator", reviewRequesterAgentId: "worker" }))
+      .toMatchObject({ statusAction: "done" });
+    expect(arbitrate({ reviewPolicy: "not_creator", reviewRequesterAgentId: "agent" }))
+      .toMatchObject({ statusAction: "in_review" });
+    expect(arbitrate({ reviewPolicy: "human_only", reviewRequesterAgentId: "worker" }))
+      .toMatchObject({ statusAction: "in_review" });
+  });
+
   it("marks done only from successful finalization and complete durable evidence", () => {
     expect(arbitrate()).toEqual(
       expect.objectContaining({
