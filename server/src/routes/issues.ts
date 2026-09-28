@@ -17770,6 +17770,21 @@ export function issueRoutes(
         const postCommitIssueActions: IssuePostCommitAction[] = [];
         try {
           txResult = await db.transaction(async (tx) => {
+            // Re-check the verdict against the row-locked policy, so a
+            // concurrent tightening cannot slip past the snapshot check above.
+            if (updatePatch.status === "done") {
+              const lockedIssue = await svc.getByIdForUpdate(id, tx);
+              if (
+                lockedIssue &&
+                lockedIssue.reviewPolicy != null &&
+                lockedIssue.reviewPolicy !== "anyone"
+              ) {
+                await assertIssueReviewVerdictActorAllowed(tx as unknown as Db, {
+                  issue: lockedIssue,
+                  actor: { type: actor.actorType, id: actor.actorId },
+                });
+              }
+            }
             const insertedComment = await svc.addComment(
               id,
               req.body.body,

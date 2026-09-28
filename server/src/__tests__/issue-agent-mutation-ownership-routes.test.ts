@@ -1975,6 +1975,18 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("rejects an agent cancelling a review-gated issue outside in_review", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ reviewPolicy: "human_only" }));
+
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "cancelled" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.details?.code).toBe("review_policy_denied");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("blocks recovery resolution from completing a review-gated issue outside in_review", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({
       status: "in_progress",

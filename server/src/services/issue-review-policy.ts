@@ -165,14 +165,14 @@ export async function assertAgentCompletionGoesThroughReview(
   const policy = input.issue.reviewPolicy ?? "anyone";
   if (policy === "anyone") return;
   if (input.actor.type !== "agent") return;
-  if (input.nextStatus !== "done") return;
-  if (input.issue.status === "in_review" || input.issue.status === "done") return;
+  if (input.nextStatus !== "done" && input.nextStatus !== "cancelled") return;
+  if (input.issue.status === "in_review" || input.issue.status === input.nextStatus) return;
   if (policy === "not_creator") {
     const requesterAgentId = await resolveOpenReviewRequesterAgent(db, input.issue);
     if (requesterAgentId && requesterAgentId !== input.actor.id) return;
   }
   throw forbidden(
-    `Review policy \`${policy}\` requires moving the issue to \`in_review\` before it can be marked done.`,
+    `Review policy \`${policy}\` requires moving the issue to \`in_review\` before it can be closed.`,
     {
       code: "review_policy_denied",
       policy,
