@@ -1,10 +1,10 @@
+import { restoreNativeWorkspaceBestEffort } from "./native-runtime/native-workspace-best-effort.js";
 import {
   withNativeWorkspaceFinalizationOwnership,
   NativeWorkspaceFinalizationBusyError,
   NativeWorkspaceFinalizationOwnershipLostError,
   type NativeWorkspaceFinalizationOwnership,
 } from "./native-runtime/native-workspace-finalization-ownership.js";
-import { classifyNativeWorkspaceFailure, type NativeWorkspaceFailureCode } from "./native-runtime/native-workspace-failure.js";
 import { hasStopOnlyCleanup, settleStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
 import { applyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
@@ -9337,7 +9337,8 @@ class NativeWorkspaceFinalizeScheduledError extends Error {
   constructor(
     readonly original: unknown,
     readonly terminalFailure: boolean,
-    readonly reasonCode: NativeWorkspaceFailureCode,
+    readonly reasonCode:
+      "workspace_sync_out_failed" | "workspace_sync_out_unrecoverable",
   ) {
     super("Native workspace finalization recovery has been scheduled.");
     this.name = "NativeWorkspaceFinalizeScheduledError";
@@ -18579,8 +18580,6 @@ export function heartbeatService(
       // environment still exists tears down through `destroyRunLease`. That
       // path uses the provider and configuration recorded on the lease first;
       // the environment is lifecycle context and only a legacy fallback.
-      // An interrupted export resume also uses recorded cleanup, but its tagged
-      // intent permits verified stop-and-retain only, never sandbox destruction.
       const isOrphanEphemeralLease = lease.leasePolicy === "ephemeral";
       const useRecordedTeardown = isOrphanEphemeralLease || !environment || hasStopOnlyCleanup(lease);
 
@@ -24458,7 +24457,10 @@ export function heartbeatService(
                   eq(workspaceOperations.status, "succeeded"),
                 )).limit(1);
                 if (exported.length) adapterFinalizeOutcome = "succeeded";
-                else await nativeWorkspaceSync.restoreWorkspace(ownership?.assertHeld);
+                else await restoreNativeWorkspaceBestEffort({
+                  db, runId: run.id, assertOwnership: ownership?.assertHeld,
+                  restore: () => nativeWorkspaceSync!.restoreWorkspace(ownership?.assertHeld),
+                });
               }
               await ownership?.assertHeld();
               await db
@@ -24617,20 +24619,31 @@ export function heartbeatService(
               .limit(1)
               .then((rows) => rows[0]?.resultId ?? null);
             if (proposedResult && nativeWorkspaceSync) {
-              const workspaceFailure = classifyNativeWorkspaceFailure(adapterErr);
+              const workspaceFailureMessage =
+                adapterErr instanceof Error ? adapterErr.message : "";
+              const unrecoverable =
+                workspaceFailureMessage ===
+                  "workspace_sync_out_unrecoverable" ||
+                workspaceFailureMessage.includes("daytona_sandbox_not_found");
               const failure = await recordNativeFinalizationFailure({
                 db,
                 runId: run.id,
-                error: new Error(workspaceFailure.failureCode),
+                error: new Error(
+                  unrecoverable
+                    ? "native_workspace_sync_out_unrecoverable"
+                    : "native_workspace_sync_out_failed",
+                ),
                 projectRunStatus: true,
                 failureScope: "workspace",
-                permanent: workspaceFailure.permanent,
+                permanent: unrecoverable,
               });
               nativeWorkspaceFinalizeScheduled = true;
               throw new NativeWorkspaceFinalizeScheduledError(
                 adapterErr,
                 failure.phase === "terminal_failure",
-                workspaceFailure.code,
+                unrecoverable
+                  ? "workspace_sync_out_unrecoverable"
+                  : "workspace_sync_out_failed",
               );
             }
             try {
@@ -25468,9 +25481,7 @@ export function heartbeatService(
             stream: "system",
             level: err.terminalFailure ? "error" : "warn",
             message: err.terminalFailure
-              ? err.reasonCode === "workspace_sync_out_unsafe_archive"
-                ? "native result is durable; workspace copy-back requires repair of an unsafe link or path in the retained sandbox"
-                : err.reasonCode === "workspace_sync_out_failed"
+              ? err.reasonCode === "workspace_sync_out_failed"
                   ? "native result is durable; automatic workspace copy-back retries stopped and saved work is retained for export repair"
                   : "native result is durable, but the sandbox containing unexported workspace changes is unrecoverable"
               : "native result is durable; workspace copy-back will retry without another provider turn",

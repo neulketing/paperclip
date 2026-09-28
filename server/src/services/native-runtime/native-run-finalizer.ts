@@ -295,8 +295,6 @@ async function recordRetryableFailure(input: {
     // Audit-only attention first records an agent-owned invalid-result outcome;
     // its caller still needs to materialize the normal bounded recovery action.
     // Board-owned terminal repairs and late snapshots remain settled.
-    const currentExportRetry = record(record(current.failureDetail).workspaceExportRetry).requestId;
-    if (currentExportRetry && currentExportRetry !== record(record(input.coordinator.failureDetail).workspaceExportRetry).requestId) return current;
     const recoveryOwner = record(record(current.failureDetail).recoveryOwner);
     const pendingAgentRecovery = current.phase === "terminal_failure"
       && input.coordinator.phase === "terminal_failure"
@@ -408,7 +406,6 @@ async function recordRetryableFailure(input: {
         failureDetail: {
           message: input.message.slice(0, 2_000),
           originalFailureCode: input.failureCode,
-          ...(priorFailureDetail.workspaceExportRetry ? { workspaceExportRetry: priorFailureDetail.workspaceExportRetry } : {}),
           ...(workspaceFinalizeAttempt === null
             ? {}
             : { workspaceFinalizeAttempt }),
@@ -578,9 +575,7 @@ export async function recordNativeFinalizationFailure(input: {
     nextAction:
       input.failureScope === "workspace"
         ? input.permanent
-          ? failureCode === "native_workspace_sync_out_unsafe_archive"
-            ? "Repair the unsafe link or path in the retained sandbox, then retry workspace export without submitting another provider turn."
-            : "Restore the exact sandbox containing the unexported workspace changes, or resolve the task manually from durable evidence."
+          ? "Restore the exact sandbox containing the unexported workspace changes, or resolve the task manually from durable evidence."
           : "Retry workspace export and merge from the retained sandbox; do not submit another provider turn."
         : "Repair the persisted native result or contract discriminator, then resume finalization from the coordinator.",
     projectRunStatus: input.projectRunStatus,
