@@ -2,7 +2,7 @@ import path from "node:path";
 import os from "node:os";
 import { promises as fs, createReadStream, createWriteStream } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import zlib from "node:zlib";
 import { pipeline } from "node:stream/promises";
@@ -252,43 +252,129 @@ export function splitLinkEntryOnce(field: string, delimiter: string): { name: st
  */
 class UnsafeOutboundArchiveError extends Error {}
 
-async function assertTarballEntriesConfined(archivePath: string): Promise<void> {
-  const { stdout } = await execFileAsync("tar", ["-tvf", archivePath], {
+function assertTarListingLineConfined(line: string): void {
+  if (line.trim().length === 0) return;
+  const parsed = parseTarVerboseListingLine(line);
+  if (!parsed) {
+    throw new UnsafeOutboundArchiveError(`Daytona syncOut refusing tarball with an unparseable entry listing: ${line}`);
+  }
+  const typeFlag = parsed.typeFlag;
+  let name = parsed.rest;
+  let linkTarget: string | null = null;
+  if (typeFlag === "l") {
+    const split = splitLinkEntryOnce(name, " -> ");
+    if (!split) throw new UnsafeOutboundArchiveError(`Daytona syncOut refusing unparseable or ambiguous symlink entry: ${line}`);
+    name = split.name;
+    linkTarget = split.target;
+  } else if (typeFlag === "h") {
+    const split = splitLinkEntryOnce(name, " link to ");
+    if (!split) throw new UnsafeOutboundArchiveError(`Daytona syncOut refusing unparseable or ambiguous hardlink entry: ${line}`);
+    name = split.name;
+    linkTarget = split.target;
+  }
+  const cleanName = name.replace(/\/+$/, "");
+  if (cleanName.length > 0 && posixPathEscapes(cleanName)) {
+    throw new UnsafeOutboundArchiveError(`Daytona syncOut refusing tarball member that escapes the extraction dir: ${name}`);
+  }
+  if (linkTarget !== null) {
+    const resolved = path.posix.join(path.posix.dirname(cleanName), linkTarget);
+    if (path.posix.isAbsolute(linkTarget) || posixPathEscapes(resolved)) {
+      throw new UnsafeOutboundArchiveError(
+        `Daytona syncOut refusing tarball link whose target escapes the extraction dir: ${name} -> ${linkTarget}`,
+      );
+    }
+  }
+}
+
+const TAR_LISTING_MAX_LINE_BYTES = 64 * 1024;
+const TAR_LISTING_MAX_STDERR_BYTES = 64 * 1024;
+// Full workspace exports are larger than provider checkpoints. These quotas
+// admit the supported 60k-file / 39.8 MB-name export and 145k-entry regression,
+// while bounding work on untrusted metadata independently of the wall deadline.
+// The byte quota matches the native workspace descriptor's 64 MiB ceiling;
+// it is an admission counter, never a buffer allocation.
+const TAR_LISTING_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
+const TAR_LISTING_MAX_ENTRIES = 250_000;
+const TAR_LISTING_TIMEOUT_MS = 120_000;
+
+export async function assertTarballEntriesConfined(
+  archivePath: string,
+  timeoutMs = TAR_LISTING_TIMEOUT_MS,
+): Promise<void> {
+  // A valid large workspace can exceed execFile's buffer. Stream within both
+  // aggregate admission quotas and per-entry/diagnostic memory bounds, checking
+  // every entry before extraction. Keep bytes until a full line to preserve
+  // UTF-8 characters split across pipe chunks.
+  const child = spawn("tar", ["-tvf", archivePath], {
     env: { ...process.env, COPYFILE_DISABLE: "1" },
-    maxBuffer: 32 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
   });
-  const lines = stdout.split("\n").filter((line) => line.trim().length > 0);
-  for (const line of lines) {
-    const parsed = parseTarVerboseListingLine(line);
-    if (!parsed) {
-      throw new UnsafeOutboundArchiveError(`Daytona syncOut refusing tarball with an unparseable entry listing: ${line}`);
+  let spawnError: Error | undefined;
+  let failure: Error | undefined;
+  let stderr = Buffer.alloc(0);
+  let pending: Buffer = Buffer.alloc(0);
+  let totalBytes = 0;
+  let entries = 0;
+  const validateLine = (line: Buffer) => {
+    // Count empty lines too, so whitespace cannot evade the parsing-work quota.
+    if (++entries > TAR_LISTING_MAX_ENTRIES) {
+      throw new Error("Daytona syncOut tar listing entry limit exceeded (250000)");
     }
-    const typeFlag = parsed.typeFlag;
-    let name = parsed.rest;
-    let linkTarget: string | null = null;
-    if (typeFlag === "l") {
-      const split = splitLinkEntryOnce(name, " -> ");
-      if (!split) throw new UnsafeOutboundArchiveError(`Daytona syncOut refusing unparseable or ambiguous symlink entry: ${line}`);
-      name = split.name;
-      linkTarget = split.target;
-    } else if (typeFlag === "h") {
-      const split = splitLinkEntryOnce(name, " link to ");
-      if (!split) throw new UnsafeOutboundArchiveError(`Daytona syncOut refusing unparseable or ambiguous hardlink entry: ${line}`);
-      name = split.name;
-      linkTarget = split.target;
+    assertTarListingLineConfined(line.toString("utf8"));
+  };
+  const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+    child.once("error", (error) => { spawnError = error; });
+    child.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  const stop = (error: Error) => {
+    failure ??= error;
+    child.kill("SIGKILL");
+  };
+  const timer = setTimeout(() => {
+    stop(new Error("Daytona syncOut tar listing validation timed out"));
+  }, Math.max(1, Math.min(timeoutMs, TAR_LISTING_TIMEOUT_MS)));
+  child.stderr.on("data", (chunk: Buffer) => {
+    if (stderr.length + chunk.length > TAR_LISTING_MAX_STDERR_BYTES) {
+      stop(new Error("Daytona syncOut tar listing diagnostics exceed the byte limit"));
+      return;
     }
-    const cleanName = name.replace(/\/+$/, "");
-    if (cleanName.length > 0 && posixPathEscapes(cleanName)) {
-      throw new UnsafeOutboundArchiveError(`Daytona syncOut refusing tarball member that escapes the extraction dir: ${name}`);
-    }
-    if (linkTarget !== null) {
-      const resolved = path.posix.join(path.posix.dirname(cleanName), linkTarget);
-      if (path.posix.isAbsolute(linkTarget) || posixPathEscapes(resolved)) {
-        throw new UnsafeOutboundArchiveError(
-          `Daytona syncOut refusing tarball link whose target escapes the extraction dir: ${name} -> ${linkTarget}`,
-        );
+    stderr = Buffer.concat([stderr, chunk]);
+  });
+  try {
+    for await (const chunk of child.stdout) {
+      if (failure) break;
+      const bytes = chunk as Buffer;
+      totalBytes += bytes.length;
+      if (totalBytes > TAR_LISTING_MAX_TOTAL_BYTES) {
+        throw new Error("Daytona syncOut tar total listing byte limit exceeded (64 MiB)");
+      }
+      let start = 0;
+      while (start < bytes.length) {
+        const newline = bytes.indexOf(10, start);
+        const end = newline < 0 ? bytes.length : newline;
+        if (pending.length + end - start > TAR_LISTING_MAX_LINE_BYTES) {
+          throw new Error("Daytona syncOut refusing tarball with an entry listing exceeding the byte limit");
+        }
+        pending = Buffer.concat([pending, bytes.subarray(start, end)]);
+        if (newline < 0) break;
+        validateLine(pending);
+        pending = Buffer.alloc(0);
+        start = newline + 1;
       }
     }
+    if (!failure && pending.length > 0) validateLine(pending);
+    const result = await closed;
+    if (failure) throw failure;
+    if (spawnError) throw spawnError;
+    if (result.code !== 0) {
+      throw new Error(`Daytona syncOut tar listing failed (${result.signal ?? result.code}): ${stderr.toString("utf8").trim()}`);
+    }
+  } catch (error) {
+    stop(error instanceof Error ? error : new Error(String(error)));
+    await closed;
+    throw failure;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
