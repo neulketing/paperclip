@@ -1,3 +1,4 @@
+import { withNativeWorkspaceFinalizationOwnership } from "./native-workspace-finalization-ownership.js";
 import fs from "node:fs/promises";
 import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -8,6 +9,7 @@ import {
   nativeRunFinalizations,
   workspaceOperations,
 } from "@paperclipai/db";
+import { classifyNativeWorkspaceFailure, type NativeWorkspaceFailureCode } from "./native-workspace-failure.js";
 import { workspaceOperationService } from "../workspace-operations.js";
 import { inspectManagedGitWorktreeBranch } from "../workspace-runtime.js";
 import { environmentService } from "../environments.js";
@@ -29,7 +31,7 @@ function readString(value: unknown) {
 }
 
 function workspaceSyncFailure(
-  code: "workspace_sync_out_failed" | "workspace_sync_out_unrecoverable",
+  code: NativeWorkspaceFailureCode,
 ) {
   return {
     status: "failed" as const,
@@ -71,6 +73,35 @@ export async function resumeNativeWorkspaceFinalization(input: {
     throw new Error("native_workspace_finalization_binding_missing");
   }
 
+  const owned = await withNativeWorkspaceFinalizationOwnership({
+    db: input.db, companyId: bound.companyId, runId: input.runId,
+  }, async (ownership) => {
+  // A sweep can be admitted before the live owner publishes a permanent
+  // failure or retry delay, then acquire ownership after that owner releases.
+  // Recheck admission inside the lock before any copyback or operation receipt.
+  const admission = await input.db.select({
+    phase: nativeRunFinalizations.phase,
+    nextAttemptAt: nativeRunFinalizations.nextAttemptAt,
+    resultId: nativeRunFinalizations.resultId,
+  }).from(nativeRunFinalizations).where(and(
+    eq(nativeRunFinalizations.runId, input.runId),
+    eq(nativeRunFinalizations.companyId, bound.companyId),
+    eq(nativeRunFinalizations.issueId, bound.issueId),
+  )).limit(1).then((rows) => rows[0] ?? null);
+  if (!admission || admission.resultId !== bound.resultId) {
+    throw new Error("native_workspace_finalization_binding_missing");
+  }
+  if (admission.phase === "terminal_failure"
+    || (admission.nextAttemptAt && admission.nextAttemptAt > new Date())) return null;
+  const successful = await input.db.select().from(workspaceOperations).where(and(
+    eq(workspaceOperations.companyId, bound.companyId),
+    eq(workspaceOperations.heartbeatRunId, input.runId),
+    eq(workspaceOperations.issueId, bound.issueId),
+    eq(workspaceOperations.phase, "workspace_finalize"),
+    eq(workspaceOperations.status, "succeeded"),
+  )).orderBy(desc(workspaceOperations.createdAt)).limit(1).then((rows) => rows[0] ?? null);
+  // A stale failure from a pre-fencing controller cannot invalidate exported work.
+  if (successful) return successful;
   const previous = await input.db.select().from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, bound.companyId),
     eq(workspaceOperations.heartbeatRunId, input.runId),
@@ -116,6 +147,7 @@ export async function resumeNativeWorkspaceFinalization(input: {
         : "workspace_directory",
     },
     run: async () => {
+      await ownership.assertHeld();
       if (nativeWorkspaceSync) {
         if (!input.environmentRuntime) {
           return {
@@ -171,7 +203,9 @@ export async function resumeNativeWorkspaceFinalization(input: {
             db: input.db,
             runId: input.runId,
             target,
+            assertOwnership: ownership.assertHeld,
           });
+          await ownership.assertHeld();
           if (!restored) {
             return workspaceSyncFailure("workspace_sync_out_unrecoverable");
           }
@@ -189,12 +223,8 @@ export async function resumeNativeWorkspaceFinalization(input: {
             },
           };
         } catch (error) {
-          const code =
-            error instanceof Error &&
-            (error.message === "workspace_sync_out_unrecoverable" ||
-              error.message.includes("daytona_sandbox_not_found"))
-              ? "workspace_sync_out_unrecoverable"
-              : "workspace_sync_out_failed";
+          await ownership.assertHeld();
+          const { code } = classifyNativeWorkspaceFailure(error);
           return workspaceSyncFailure(code);
         }
       }
@@ -206,6 +236,7 @@ export async function resumeNativeWorkspaceFinalization(input: {
         };
       }
       const isDirectory = await fs.stat(cwd).then((stat) => stat.isDirectory()).catch(() => false);
+      await ownership.assertHeld();
       if (!isDirectory) {
         return {
           status: "failed",
@@ -241,4 +272,6 @@ export async function resumeNativeWorkspaceFinalization(input: {
       };
     },
   });
+  });
+  return owned.acquired ? owned.value : null;
 }

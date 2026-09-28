@@ -214,8 +214,12 @@ commit, and retryable or terminal failure.
 
 Examples:
 
-- a workspace-finalization failure preserves the claim and records a retryable
-  error rather than falsely completing the issue;
+- a transient workspace-finalization failure preserves the claim and retries
+  copy-back without submitting another provider turn. Unsafe archive paths or
+  links stop retries immediately with `native_workspace_sync_out_unsafe_archive`:
+  the accepted result and sandbox work remain retained, and the issue is blocked
+  for repair of the link or path before export is retried. A missing sandbox uses
+  the separate `native_workspace_sync_out_unrecoverable` recovery reason;
 - a failed provider run preserves partial evidence and schedules recovery;
 - a status-version race causes bounded reassessment against current issue
   state; and

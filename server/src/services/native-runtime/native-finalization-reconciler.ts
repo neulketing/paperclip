@@ -1,3 +1,4 @@
+import { restoreNativeWorkspaceExportRepairs } from "./native-workspace-export-recovery.js";
 import { dismissAutomaticCompletionReviews, decisionHasRetiredAutomaticReview } from "./automatic-completion-reviews.js";
 import { logger } from "../../middleware/logger.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -33,6 +34,7 @@ import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueService } from "../issues.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { reportRunFailure } from "../run-failure-report.js";
+import { classifyNativeWorkspaceFailure } from "./native-workspace-failure.js";
 import { resumeNativeWorkspaceFinalization } from "./native-workspace-finalizer.js";
 import { dismissObsoleteNativePolicyReviews } from "./obsolete-policy-reviews.js";
 import {
@@ -546,6 +548,9 @@ export async function reconcileNativeFinalizations(
     }) => Promise<void>;
   } = {},
 ) {
+  await restoreNativeWorkspaceExportRepairs(db, runIds).catch((err) => {
+    logger.warn({ err }, "Workspace export repair projection remains pending");
+  });
   await dismissObsoleteNativePolicyReviews(db, runIds).catch((err) => {
     logger.warn({ err }, "Obsolete native policy review lookup failed; continuing native reconciliation");
   });
@@ -855,23 +860,19 @@ export async function reconcileNativeFinalizations(
         runId: row.runId,
         environmentRuntime: options.environmentRuntime,
       });
+      // Busy is ownership, not another failed export or retry-budget debit.
+      if (!operation) continue;
       const workspaceFinalizeStatus =
         operation.status === "succeeded" ? "succeeded" : "failed";
       if (workspaceFinalizeStatus === "failed") {
-        const unrecoverable = operation.stderrExcerpt?.includes(
-          "workspace_sync_out_unrecoverable",
-        );
+        const workspaceFailure = classifyNativeWorkspaceFailure(new Error(operation.stderrExcerpt ?? ""));
         const failure = await recordNativeFinalizationFailure({
           db,
           runId: row.runId,
-          error: new Error(
-            unrecoverable
-              ? "native_workspace_sync_out_unrecoverable"
-              : "native_workspace_sync_out_failed",
-          ),
+          error: new Error(workspaceFailure.failureCode),
           projectRunStatus: true,
           failureScope: "workspace",
-          permanent: unrecoverable,
+          permanent: workspaceFailure.permanent,
         });
         results.push({
           ...failure,

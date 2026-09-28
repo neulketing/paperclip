@@ -1,0 +1,164 @@
+# Native workspace finalization ownership and recovery
+
+Native workspace export and merge acquire a PostgreSQL advisory lock scoped to
+company and run before the first physical copyback. The live heartbeat and the
+reconciler share that lock. Recovery skips a busy owner without recording another
+workspace operation or spending a retry. Recovery also rechecks the coordinator's terminal state and retry time under ownership: an earlier sweep snapshot cannot
+start another export after live finalization publishes a permanent repair or delay.
+A completed workspace barrier is reread
+under ownership before export, and a committed coordinator cannot be overwritten
+by a late failure receipt.
+
+The lock transaction holds no row locks. Ordinary progress and finalization
+receipts remain visible through the normal database pool. A dedicated connection outside the application pool is
+reserved for the duration of copyback and closed when it settles; even a one-connection application pool remains available for progress writes. Its run profile carries
+`nativeWorkspaceFinalizationOwner`, an exact token, host, PID, and process-start
+receipt. Losing the lock connection does not prove physical copyback stopped:
+a contender still refuses a receipt whose controller is alive. The original
+callback joins before its token is released, and publication checks the lock
+connection and token. Graceful completion clears the receipt. If that cleanup write fails after the
+callback joins, only the same exact controller boot retains positive in-process
+join evidence and may resume after reconnecting; an unknown token or a new boot
+does not inherit that authority. A controller that
+has exited on the same host can be recovered automatically only when a durable
+successful workspace barrier proves its copyback finished. A dead parent can
+leave tar/Git children alive, so incomplete copyback requires operator stop
+verification even on the same host. PID reuse is checked against its recorded
+start time rather than trusted by PID alone.
+
+## Unverified copyback after controller replacement
+
+The controller cannot verify a process on a foreign or unknown host, or orphaned
+copyback children after an abrupt parent death before the success barrier. It surfaces
+`native_workspace_finalization_owner_unverified` as board-owned recovery, with no
+automatic provider wake. This is an intentional limit: elapsed time or a missing
+database connection never proves the old copyback process stopped.
+
+An instance operator must first verify through the deployment platform that the
+exact prior controller **and its copyback subprocesses** have stopped. Retain the
+sandbox, accepted native result, and workspace descriptor. Do not run a new
+provider turn, delete workspace contents, or relax archive confinement.
+
+After that platform verification, use a database maintenance transaction to
+release only the exact receipt shown by the recovery action. Replace the four
+placeholders with the action's company, run, token, and source issue. The advisory
+lock prevents concurrent acquisition during this change; the token comparison
+prevents clearing a newer owner. A zero-row update means ownership changed and
+requires fresh inspection. This maintenance operation is for a full-control
+instance operator, not an agent tool.
+
+```sql
+BEGIN;
+SELECT pg_advisory_xact_lock(hashtextextended(
+  'native-workspace-finalization:<company-id>:<run-id>', 0));
+UPDATE heartbeat_runs
+SET runner_profile_json = runner_profile_json - 'nativeWorkspaceFinalizationOwner'
+WHERE company_id = '<company-id>'::uuid
+  AND id = '<run-id>'::uuid
+  AND native_issue_id = '<issue-id>'::uuid
+  AND runtime_mode = 'native'
+  AND runner_profile_json->'nativeWorkspaceFinalizationOwner'->>'token' = '<owner-token>'
+RETURNING id;
+COMMIT;
+```
+
+Resolve the existing board recovery action with a note containing the platform
+stop evidence. The ordinary reconciliation sweep then resumes workspace
+finalization from the accepted result. Confirm the run's native phase and
+`resultJson.finalizationPhase` are `committed`, there is no `nextAttemptAt`, and
+no workspace operation is still running. The accepted provider result is reused.
+
+## Repairing a failed workspace export without rerunning the agent
+
+An escaping symlink or unsafe archive member produces
+`native_workspace_sync_out_unsafe_archive` on the first export attempt. The task
+is blocked, the accepted result stays saved, and the sandbox is stopped and
+retained. Automatic retry cannot repair unsafe input. Archive confinement remains
+in force; no link is followed or silently discarded. Transient export failures retry three times, then produce `native_workspace_sync_out_retry_exhausted` and the same board-owned repair path. The reason identifies an export failure, not an inferred disk-space cause.
+
+A board member with runtime management access can complete the saved result:
+
+1. Read the recovery action, run, and environment lease. Verify the company, run,
+   provider sandbox ID, and stopped-provider receipt. Preserve that exact sandbox;
+   do not acquire a replacement or seed the host workspace over it.
+2. Through the provider console or official SDK, resume that sandbox and repair
+   the identified unsafe entry. For a sandbox-only tool alias, record its target
+   and remove or replace that alias with a confined link while preserving all user
+   files. Inspect arbitrary user links before changing them. Extending the sandbox
+   retention window can be necessary during this repair.
+3. In the task's **Workspace export needs repair** notice, describe the repair and
+   choose **Retry workspace export**. The equivalent board API is
+   `POST /api/issues/:id/recovery-actions/retry-workspace-export` with
+   `{ "actionId": "<recovery-action-id>", "runId": "<run-id>", "repairNote": "<repair and preservation evidence>" }`.
+4. Confirm the same run commits, the saved result determines the task outcome,
+   and the recovery action resolves. No new provider turn or wake is created.
+   A reusable repair sandbox is stopped and retained again. An ephemeral sandbox follows its original destroy-after-turn policy only after the exact result commits and the workspace reference contains a finalized host-copy receipt.
+
+Admission requires the same accepted result, task owner, descriptor, and lease;
+confirmed prior provider stop; an available repaired sandbox; and no newer task
+execution or competing current lease. It shares finalization ownership and
+resumes only the recorded provider lease through its verified lifecycle method.
+That method drains old activity and verifies the saved workspace identity before
+reopening the provider's controller admission gate; an external console restart
+alone does not reopen that gate. Admission rejects a missing or replacement
+sandbox and revalidates after probing the exact workspace. A changed binding or unavailable sandbox
+returns `409` without reopening work. A duplicate queued request is idempotent.
+An export that is still unsafe creates another explicit repair hold. Generic
+recovery's **Retry source task** does not substitute for export-only retry.
+
+Before publishing terminal export failure, the finalizer atomically records a stop-only intent with the failed run. This includes ephemeral allocations: ordinary release policy cannot delete their unexported files. A crash before cleanup leaves enough exact lease, result, and plugin authority for restart recovery. The same intent remains while export-only retry is active.
+
+Before resuming the retained sandbox, the controller durably records a stop-only
+cleanup intent on that exact lease and removes the old stopped receipt. If the
+resume reply is lost, probing fails, or admission changes, it stops and retains
+the sandbox. A failed stop remains `pending_cleanup`; a restarted controller's
+bounded cleanup sweep retries the verified stop without destroying saved files.
+An in-flight request holds a 15-minute cleanup claim, so a controller crash may
+delay that sweep until the claim expires. Neither an unconfirmed stop nor a
+stale receipt grants admission, and a changed lease or competing sandbox owner
+prevents cleanup from taking ownership. Retry export after the lease has a new
+confirmed stopped receipt. No provider turn is created by this recovery.
+Cleanup and its readiness probe use the plugin ID recorded on that lease. Another
+plugin with the same provider name cannot take over; an unavailable original
+plugin defers cleanup without consuming an attempt. Stop-only cleanup requires the exact plugin worker to advertise `environmentStopLease`. Older plugins without that hook receive neither release nor destroy; resume admission also defers until safe compensation is available.
+New intents use schema v2 with an explicit plugin pin. A v1 intent created before
+that field existed remains recoverable using only the plugin ID already recorded
+on its exact lease; an explicit mismatched pin is still rejected.
+
+The opt-in `native-workspace-export-resume.live.test.ts` is a provider-boundary
+fault integration, separate from the browser Product E2E. After building the
+Daytona plugin, run that exact Vitest file with `PAPERCLIP_LIVE_EXPORT_RESUME=1`,
+`DAYTONA_API_KEY`, and `PAPERCLIP_LIVE_EXPORT_RESUME_IMAGE` set to an immutable
+image digest. It creates one disposable ephemeral sandbox and database, injects probe and stop transport failures, and verifies a fresh runtime can stop the sandbox while preserving exact nonce bytes. It also injects three transient failures at the production finalizer boundary and verifies retained work plus export-only retry admission. This boundary test does not claim physical copyback or result commitment; the browser Product E2E supplies that proof. It deletes only that owned fixture after proof.
+
+The reconciliation sweep also restores a repair notice that an older generic
+sweeper incorrectly resolved as `new_source_execution_path`, but only for the
+current blocked task with its accepted result and exact stopped lease. It does
+not reopen the run or replace a different current recovery action.
+
+Daytona stop-only preservation disables provider auto-delete and refreshes the provider record to confirm the disabled policy before stopping. An unavailable or unconfirmed policy leaves cleanup pending; it never falls back to stop or delete. The original ephemeral destroy policy applies only after exact accepted-result copyback and commitment.
+
+New ephemeral native allocations receive an acquisition-time workspace sentinel bound to their run and provider allocation. Export-only resume requires that proof and the unchanged durable intent. A legacy ephemeral allocation without this proof remains blocked; recovery never creates a sentinel or accepts a replacement during resume. The reusable workspace identity hash is unchanged.
+
+Disabling auto-delete retains provider storage while repair waits. No automatic lease-age sweep deletes these released, confirmed-stopped allocations. Storage costs can continue until committed copyback applies the original cleanup policy or an operator explicitly deletes the allocation.
+
+### Generic stop-only cleanup
+
+An explicit sandbox `stop_and_retain` also requires the dedicated provider hook
+when no export repair is involved, including successful per-turn reusable runs
+and startup cancellation. Before dispatch, the controller stores a separate
+`sandboxStopAndRetain` intent bound to the company, run, lease, provider allocation,
+and original plugin. The initial cleanup and restart sweep both require that
+plugin to advertise `environmentStopLease`. Missing capability or failed stop
+leaves pending cleanup; ordinary release and destroy are never fallback methods.
+
+A matching stopped receipt clears the pending intent, leaves the lease released
+and resumable, and saves `sandboxStopAndRetainReceipt`. Its request identity,
+original plugin and `method: "environmentStopLease"` attest this dispatch route.
+The accepted-result export intent and its commitment requirements are unchanged.
+
+The built-in fake provider uses its explicit `stopLease` operation rather than a
+plugin RPC. Its intent pins the registered built-in provider and its receipt says
+`builtin.stopLease`. This provider owns no real process or filesystem; the receipt
+models its lifecycle. Missing built-in stop support or an unconfirmed receipt
+also remains pending through restart, without calling release or destroy.
