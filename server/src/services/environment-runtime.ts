@@ -1,8 +1,7 @@
 import { readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
-import { hasNativeWorkspaceExportResume, readNativeWorkspaceExportResume } from "./native-runtime/native-workspace-export-resume.js";
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companySecrets, companySecretVersions, environmentLeases, heartbeatRuns } from "@paperclipai/db";
 import type {
@@ -1671,14 +1670,7 @@ function createSandboxEnvironmentDriver(
     return runParent !== undefined ? runWithRuntimeParent(runParent, call) : call();
   }
 
-  async function resolveSandboxProviderPlugin(input: { provider: string; pluginId?: string }) {
-    if (input.pluginId) {
-      const pinned = await resolvePluginSandboxProviderDriverById({ db, pluginId: input.pluginId, driverKey: input.provider });
-      if (!pinned) return { state: "missing" as const, resolved: null };
-      if (pinned.plugin.status !== "ready") return { state: "not_ready" as const, resolved: pinned };
-      if (!pluginWorkerManager?.isRunning(pinned.plugin.id)) return { state: "worker_unavailable" as const, resolved: pinned };
-      return { state: "running" as const, resolved: pinned };
-    }
+  async function resolveSandboxProviderPlugin(input: { provider: string }) {
     const running = await resolvePluginSandboxProviderDriverByKey({
       db,
       driverKey: input.provider,
@@ -2572,23 +2564,6 @@ function createSandboxEnvironmentDriver(
     },
 
     async retryPendingSandboxTeardown(input) {
-      const exportResume = hasNativeWorkspaceExportResume(input.lease);
-      const resumeIntent = readNativeWorkspaceExportResume(input.lease);
-      const assertExportResumeOwnership = async () => {
-        if (!resumeIntent) throw new Error("Workspace export resume ownership is invalid.");
-        const [current] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, input.lease.id)).limit(1);
-        const [otherOwner] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
-          ne(environmentLeases.id, input.lease.id), eq(environmentLeases.provider, input.lease.provider!),
-          eq(environmentLeases.providerLeaseId, input.lease.providerLeaseId!), inArray(environmentLeases.status, ["active", "pending_cleanup"]),
-        )).limit(1);
-        if (!current || current.status !== "pending_cleanup" || current.companyId !== input.lease.companyId
-          || current.metadata?.pendingCleanupAttemptId !== input.lease.metadata?.pendingCleanupAttemptId
-          || readNativeWorkspaceExportResume(current)?.requestId !== resumeIntent.requestId
-          || readNativeWorkspaceExportResume(current)?.pluginId !== resumeIntent.pluginId || otherOwner) {
-          throw new Error("Workspace export resume ownership changed before cleanup.");
-        }
-      };
-      if (exportResume) await assertExportResumeOwnership();
       // Resolve the teardown from the immutable orphan lease row, not from the
       // current environment. The row keeps the provider, the provider lease id,
       // and the sandbox config in its metadata. A provider change re-points the
@@ -2622,9 +2597,7 @@ function createSandboxEnvironmentDriver(
             `Sandbox provider "${recordedProvider}" needs a plugin worker manager for cleanup, but none is available.`,
           );
         }
-        const pinnedPluginId = exportResume ? readString(input.lease.metadata?.pluginId) : null;
-        if (exportResume && !pinnedPluginId) throw new Error("Workspace export cleanup has no recorded provider plugin.");
-        const pluginProvider = await resolveSandboxProviderPlugin({ provider: recordedProvider, ...(pinnedPluginId ? { pluginId: pinnedPluginId } : {}) });
+        const pluginProvider = await resolveSandboxProviderPlugin({ provider: recordedProvider });
         if (pluginProvider.state !== "running") {
           throw new Error(
             `Sandbox provider plugin for "${recordedProvider}" is ${pluginProvider.state}, so the cleanup teardown cannot run yet.`,
@@ -2641,23 +2614,6 @@ function createSandboxEnvironmentDriver(
           { issueId: input.lease.issueId, heartbeatRunId: input.lease.heartbeatRunId },
         );
         const workerConfig = stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig);
-        if (exportResume) {
-          const pluginId = pluginProvider.resolved.plugin.id;
-          if (!pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentReleaseLease")) {
-            throw new Error("Workspace export recovery requires verified stop-only cleanup.");
-          }
-          await assertExportResumeOwnership();
-          const receipt = await pluginWorkerManager.call(pluginId, "environmentReleaseLease", {
-            driverKey: recordedProvider, companyId: input.lease.companyId,
-            environmentId: input.lease.environmentId ?? "", issueId: input.lease.issueId,
-            config: workerConfig, providerLeaseId: input.lease.providerLeaseId,
-            leaseMetadata: input.lease.metadata ?? {}, cancelActiveWork: true,
-          }, Math.min(resolvePluginSandboxRpcTimeoutMs(workerConfig) ?? 60_000, 60_000));
-          if (remoteTerminationReceipt(input.lease, receipt)?.state !== "stopped") {
-            throw new Error("Workspace export recovery did not confirm the retained sandbox stopped.");
-          }
-          return receipt;
-        }
         const failedCreation = readEnvironmentCreationCleanupError({ data: {
           schema: "paperclip/environment-creation-cleanup/v1",
           cleanup: input.lease.metadata?.failedCreateCleanup,
@@ -2693,7 +2649,6 @@ function createSandboxEnvironmentDriver(
       // durable orphan record, not the environment binding, for the same reason
       // as the plugin path above. The teardown targets the recorded provider,
       // never the current environment provider.
-      if (exportResume) throw new Error("Workspace export recovery requires verified stop-only cleanup.");
       const cleanupConfig = await resolveSandboxCleanupConfigSecrets(
         db,
         input.lease.companyId,
@@ -2721,12 +2676,6 @@ function createSandboxEnvironmentDriver(
       // teardown runs, throws its own "no worker manager" error, and counts
       // toward the cap.
       if (!pluginWorkerManager) return true;
-      if (hasNativeWorkspaceExportResume(input.lease)) {
-        const pinnedPluginId = readString(input.lease.metadata?.pluginId);
-        if (!pinnedPluginId) return true; // Permanent invalid intent, never a by-key fallback.
-        const pinned = await resolvePluginSandboxProviderDriverById({ db, pluginId: pinnedPluginId, driverKey: recordedProvider });
-        return Boolean(pinned?.plugin.status === "ready" && pluginWorkerManager.isRunning(pinned.plugin.id));
-      }
       // Resolve the installed plugin without a wait. A plugin reload or a plugin
       // reinstall can remove the plugin row for a short window, so a missing
       // plugin is a transient condition, not a permanent one. Report not ready,
@@ -2827,30 +2776,6 @@ function createSandboxEnvironmentDriver(
           workspaceRealization: record,
         },
       };
-    },
-
-    async resumeRunLease(input) {
-      const pluginId = readString(input.lease.metadata?.pluginId);
-      const providerKey = readString(input.lease.metadata?.provider);
-      if (!input.lease.metadata?.sandboxProviderPlugin || !pluginWorkerManager || !pluginId || !providerKey
-        || !input.lease.providerLeaseId || input.lease.environmentId !== input.environment.id
-        || !pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentResumeLease")) {
-        throw new Error("The exact sandbox lease cannot be resumed by its verified provider.");
-      }
-      // This is a lifecycle resume, never acquisition: no replacement, host
-      // seed, lease mutation, or provider turn is allowed at this boundary.
-      const config = stripSandboxProviderEnvelope(await resolvePluginSandboxRuntimeConfig({
-        environment: input.environment, lease: input.lease, provider: providerKey,
-      }) as SandboxEnvironmentConfig);
-      const resumed = await pluginWorkerManager.call(pluginId, "environmentResumeLease", {
-        driverKey: providerKey, companyId: input.lease.companyId, environmentId: input.environment.id,
-        issueId: input.lease.issueId, config, providerLeaseId: input.lease.providerLeaseId,
-        leaseMetadata: input.lease.metadata ?? undefined,
-      }, Math.min(resolvePluginSandboxRpcTimeoutMs(config) ?? 60_000, 60_000));
-      if (resumed?.providerLeaseId !== input.lease.providerLeaseId) {
-        throw new Error("The provider did not confirm the exact retained sandbox. No replacement was acquired.");
-      }
-      return resumed;
     },
 
     async execute(input) {

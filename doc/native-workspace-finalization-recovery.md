@@ -68,70 +68,29 @@ finalization from the accepted result. Confirm the run's native phase and
 `resultJson.finalizationPhase` are `committed`, there is no `nextAttemptAt`, and
 no workspace operation is still running. The accepted provider result is reused.
 
-## Repairing a rejected archive without rerunning the agent
+## Automatic unsafe archive recovery
 
-An escaping symlink or unsafe archive member produces
-`native_workspace_sync_out_unsafe_archive` on the first export attempt. The task
-is blocked, the accepted result stays saved, and the sandbox is stopped and
-retained. Automatic retry cannot repair unsafe input. Archive confinement remains
-in force; no link is followed or silently discarded.
+An unsafe link in a native workspace must not fail a completed task or require
+an operator to repair a sandbox. The accepted agent result remains authoritative.
 
-A board member with runtime management access can complete the saved result:
+Daytona validates every exported archive before extraction. If validation rejects
+an archive, export once more using regular files only. The fallback does not
+follow or delete symlinks. It omits all symlinks (including safe ones), stores
+hard-linked files as ordinary bytes, and preserves directory exclusions. It also
+omits empty directories. The second archive passes the same confinement checks.
+A fixed informational message records the fallback in the provider log.
 
-1. Read the recovery action, run, and environment lease. Verify the company, run,
-   provider sandbox ID, and stopped-provider receipt. Preserve that exact sandbox;
-   do not acquire a replacement or seed the host workspace over it.
-2. Through the provider console or official SDK, resume that sandbox and repair
-   the identified unsafe entry. For a sandbox-only tool alias, record its target
-   and remove or replace that alias with a confined link while preserving all user
-   files. Inspect arbitrary user links before changing them. Extending the sandbox
-   retention window can be necessary during this repair.
-3. In the task's **Workspace export needs repair** notice, describe the repair and
-   choose **Retry workspace export**. The equivalent board API is
-   `POST /api/issues/:id/recovery-actions/retry-workspace-export` with
-   `{ "actionId": "<recovery-action-id>", "runId": "<run-id>", "repairNote": "<repair and preservation evidence>" }`.
-4. Confirm the same run commits, the saved result determines the task outcome,
-   and the recovery action resolves. No new provider turn or wake is created.
-   The repair sandbox is stopped and retained again after finalization.
+If native copyback still rejects the archive or its source confinement check,
+Paperclip discards that export, records `workspace_export_omitted` at info level
+in the local run log, and completes finalization using the original accepted
+result. It does not create a task warning, recovery card, repair request, or new
+provider turn. The normal completion policy still enforces ownership and explicit
+workflow constraints. Lost remote files are an accepted tradeoff.
 
-Admission requires the same accepted result, task owner, descriptor, and lease;
-confirmed prior provider stop; an available repaired sandbox; and no newer task
-execution or competing current lease. It shares finalization ownership and
-resumes only the recorded provider lease through its verified lifecycle method.
-That method drains old activity and verifies the saved workspace identity before
-reopening the provider's controller admission gate; an external console restart
-alone does not reopen that gate. Admission rejects a missing or replacement
-sandbox and revalidates after probing the exact workspace. A changed binding or unavailable sandbox
-returns `409` without reopening work. A duplicate queued request is idempotent.
-An export that is still unsafe creates another explicit repair hold. Generic
-recovery's **Retry source task** does not substitute for export-only retry.
+The live path and restart finalizer use the same policy under workspace
+finalization ownership. Ownership loss, transport failures, missing sandboxes,
+and other unrelated errors retain their existing handling. No unsafe archive is
+extracted. No host path or link target is copied into the informational run event.
 
-Before resuming the retained sandbox, the controller durably records a stop-only
-cleanup intent on that exact lease and removes the old stopped receipt. If the
-resume reply is lost, probing fails, or admission changes, it stops and retains
-the sandbox. A failed stop remains `pending_cleanup`; a restarted controller's
-bounded cleanup sweep retries the verified stop without destroying saved files.
-An in-flight request holds a 15-minute cleanup claim, so a controller crash may
-delay that sweep until the claim expires. Neither an unconfirmed stop nor a
-stale receipt grants admission, and a changed lease or competing sandbox owner
-prevents cleanup from taking ownership. Retry export after the lease has a new
-confirmed stopped receipt. No provider turn is created by this recovery.
-Cleanup and its readiness probe use the plugin ID recorded on that lease. Another
-plugin with the same provider name cannot take over; an unavailable original
-plugin defers cleanup without consuming an attempt.
-New intents use schema v2 with an explicit plugin pin. A v1 intent created before
-that field existed remains recoverable using only the plugin ID already recorded
-on its exact lease; an explicit mismatched pin is still rejected.
-
-The opt-in `native-workspace-export-resume.live.test.ts` is a provider-boundary
-fault integration, separate from the browser Product E2E. After building the
-Daytona plugin, run that exact Vitest file with `PAPERCLIP_LIVE_EXPORT_RESUME=1`,
-`DAYTONA_API_KEY`, and `PAPERCLIP_LIVE_EXPORT_RESUME_IMAGE` set to an immutable
-image digest. It creates one disposable sandbox and database, injects probe and
-stop transport failures, and verifies a fresh runtime can stop the sandbox while
-preserving exact nonce bytes. It deletes only that owned fixture after proof.
-
-The reconciliation sweep also restores a repair notice that an older generic
-sweeper incorrectly resolved as `new_source_execution_path`, but only for the
-current blocked task with its accepted result and exact stopped lease. It does
-not reopen the run or replace a different current recovery action.
+This replaces the former manual export-repair endpoint and task card. There is
+no operator repair workflow for unsafe archives.

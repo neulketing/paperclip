@@ -3061,6 +3061,7 @@ const plugin = definePlugin({
           operations: params.operations,
           remoteDir,
           timeoutSeconds,
+          onArchiveRecovery: () => pluginContext?.logger.info("Workspace export omitted links after archive validation; retrying with regular files."),
         });
         sandboxHandleCache.markFresh(scope);
         return result;
