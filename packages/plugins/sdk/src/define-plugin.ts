@@ -387,6 +387,12 @@ export interface PluginDefinition {
     params: PluginEnvironmentReleaseLeaseParams,
   ): Promise<PluginEnvironmentTerminationReceipt | void>;
 
+  /** Stop active work and retain the allocation. Never delete it, including on
+   * stop failure. Advertised separately so legacy release hooks are not used. */
+  onEnvironmentStopLease?(
+    params: PluginEnvironmentReleaseLeaseParams,
+  ): Promise<PluginEnvironmentTerminationReceipt | void>;
+
   /** Called when the host needs to force-destroy provider state. */
   onEnvironmentDestroyLease?(
     params: PluginEnvironmentDestroyLeaseParams,

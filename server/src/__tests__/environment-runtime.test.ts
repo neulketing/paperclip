@@ -5015,7 +5015,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
   });
 
-  it.each(["stopped", "unconfirmed", "foreign_marker", "competing_owner", "live_request", "late_receipt", "duplicate_key", "owner_stopped", "owner_driver_changed", "owner_missing", "legacy_intent", "foreign_plugin_pin", "v2_missing_pin"])("recovers a pending export resume with stop-only cleanup after restart: %s", async outcome => {
+  it.each(["stopped", "unconfirmed", "foreign_marker", "competing_owner", "live_request", "late_receipt", "duplicate_key", "owner_stopped", "owner_driver_changed", "owner_missing", "legacy_intent", "foreign_plugin_pin", "v2_missing_pin", "legacy_release_only"])("recovers a pending export resume with stop-only cleanup after restart: %s", async outcome => {
     const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
     const lease = seeded.reusableLease;
     const requestId = randomUUID();
@@ -5038,20 +5038,20 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     if (outcome === "competing_owner") await db.insert(environmentLeases).values({ companyId: seeded.companyId,
       environmentId: seeded.environment.id, status: "active", provider: lease.provider, providerLeaseId: lease.providerLeaseId });
     const call = vi.fn(async (_id: string, method: string) => {
-      if (method !== "environmentReleaseLease") throw new Error("Saved workspace must never be destroyed");
+      if (method !== "environmentStopLease") throw new Error("Saved workspace must never be destroyed");
       if (outcome === "late_receipt") await db.update(environmentLeases).set({ status: "active", heartbeatRunId: null,
         cleanupStatus: null, metadata: { newOwner: true } }).where(eq(environmentLeases.id, lease.id));
       return outcome === "unconfirmed" ? undefined : { providerLeaseId: lease.providerLeaseId, state: "stopped" };
     });
     const workerManager = { isRunning: (id: string) => !(outcome === "owner_stopped" && id === seeded.pluginId), call,
-      getWorker: () => ({ supportedMethods: ["environmentReleaseLease", "environmentDestroyLease"] }),
+      getWorker: () => ({ supportedMethods: outcome === "legacy_release_only" ? ["environmentReleaseLease", "environmentDestroyLease"] : ["environmentStopLease", "environmentReleaseLease", "environmentDestroyLease"] }),
     } as unknown as PluginWorkerManager;
     const restarted = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
     await heartbeatService(db, { environmentRuntime: restarted }).sweepPendingCleanupLeases({ backoffMs: 0 });
     expect(call.mock.calls.some((entry) => entry[1] === "environmentDestroyLease")).toBe(false);
     const persisted = (await environmentService(db).getLeaseById(lease.id))!;
     if (["stopped", "duplicate_key", "legacy_intent"].includes(outcome)) {
-      expect(call).toHaveBeenCalledWith(seeded.pluginId, "environmentReleaseLease", expect.objectContaining({ providerLeaseId: lease.providerLeaseId, cancelActiveWork: true }), expect.any(Number));
+      expect(call).toHaveBeenCalledWith(seeded.pluginId, "environmentStopLease", expect.objectContaining({ providerLeaseId: lease.providerLeaseId, cancelActiveWork: true }), expect.any(Number));
       expect(persisted).toMatchObject({ status: "expired", cleanupStatus: "success", metadata: { remoteExecutionTermination: { state: "stopped", runId: lease.heartbeatRunId } } });
       expect(persisted.metadata?.nativeWorkspaceExportResume).toBeUndefined();
     } else if (outcome === "late_receipt") {
@@ -5059,7 +5059,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     } else {
       expect(persisted).toMatchObject({ status: "pending_cleanup", cleanupStatus: "failed" });
       expect(persisted.metadata?.remoteExecutionTermination).toBeUndefined();
-      if (["foreign_marker", "foreign_plugin_pin", "v2_missing_pin", "competing_owner", "live_request", "owner_stopped", "owner_driver_changed", "owner_missing"].includes(outcome)) expect(call).not.toHaveBeenCalled();
+      if (["foreign_marker", "foreign_plugin_pin", "v2_missing_pin", "competing_owner", "live_request", "owner_stopped", "owner_driver_changed", "owner_missing", "legacy_release_only"].includes(outcome)) expect(call).not.toHaveBeenCalled();
       if (["owner_stopped", "owner_driver_changed", "owner_missing"].includes(outcome)) {
         expect(persisted.metadata?.pendingCleanupAttemptId).toBe(requestId);
       }

@@ -2643,11 +2643,11 @@ function createSandboxEnvironmentDriver(
         const workerConfig = stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig);
         if (exportResume) {
           const pluginId = pluginProvider.resolved.plugin.id;
-          if (!pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentReleaseLease")) {
+          if (!pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentStopLease")) {
             throw new Error("Workspace export recovery requires verified stop-only cleanup.");
           }
           await assertExportResumeOwnership();
-          const receipt = await pluginWorkerManager.call(pluginId, "environmentReleaseLease", {
+          const receipt = await pluginWorkerManager.call(pluginId, "environmentStopLease", {
             driverKey: recordedProvider, companyId: input.lease.companyId,
             environmentId: input.lease.environmentId ?? "", issueId: input.lease.issueId,
             config: workerConfig, providerLeaseId: input.lease.providerLeaseId,

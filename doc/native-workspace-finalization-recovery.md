@@ -99,3 +99,8 @@ Pending stop-only cleanup intents from the former manual-repair flow still use
 the exact recorded provider and verified stop receipt. They cannot fall through
 to destructive teardown. This compatibility path creates no new task warning,
 repair action, or provider turn.
+
+Legacy cleanup requires the pinned worker to advertise `environmentStopLease`,
+whose contract forbids deleting the allocation even if stopping fails. A
+release-only worker leaves the old intent pending; ordinary release is never a
+substitute for stop-and-retain. New exports do not create these intents.

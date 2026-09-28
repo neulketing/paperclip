@@ -2453,6 +2453,14 @@ const plugin = definePlugin({
     );
   },
 
+  async onEnvironmentStopLease(
+    params: PluginEnvironmentReleaseLeaseParams,
+  ): Promise<PluginEnvironmentTerminationReceipt | void> {
+    // The explicit cancellation branch stops without a delete fallback, even
+    // for ephemeral leases or when the provider rejects the stop.
+    return plugin.definition.onEnvironmentReleaseLease!({ ...params, cancelActiveWork: true });
+  },
+
   async onEnvironmentReleaseLease(
     params: PluginEnvironmentReleaseLeaseParams,
   ): Promise<PluginEnvironmentTerminationReceipt | void> {

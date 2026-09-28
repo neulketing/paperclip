@@ -1375,6 +1375,11 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentReleaseLeaseParams,
     result: PluginEnvironmentTerminationReceipt | void,
   ];
+  /** Stop and retain; providers must never fall back to destroying the lease. */
+  environmentStopLease: [
+    params: PluginEnvironmentReleaseLeaseParams,
+    result: PluginEnvironmentTerminationReceipt | void,
+  ];
   environmentDestroyLease: [
     params: PluginEnvironmentDestroyLeaseParams,
     result: PluginEnvironmentTerminationReceipt | void,
@@ -1478,6 +1483,7 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "environmentAcquireLease",
   "environmentResumeLease",
   "environmentReleaseLease",
+  "environmentStopLease",
   "environmentDestroyLease",
   "environmentRealizeWorkspace",
   "environmentExecute",
