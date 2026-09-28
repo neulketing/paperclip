@@ -379,7 +379,7 @@ function createRunContextDb(
         if (getTableName(table) === "issue_thread_interactions") {
           return { where: vi.fn(() => ({ limit: vi.fn(async () => []) })) };
         }
-        if (getTableName(table) === "activity_log" && "target" in selection) {
+        if (getTableName(table) === "activity_log" && "actorType" in selection) {
           return { where: vi.fn(() => ({ orderBy: vi.fn(() => ({ limit: vi.fn(async () => []) })) })) };
         }
         return buildQuery(selection, getTableName(table) === "chat_conversations", getTableName(table) === "issue_recovery_actions");
@@ -1948,6 +1948,18 @@ describe("agent issue mutation checkout ownership", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("rejects an agent loosening a restrictive review policy", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ reviewPolicy: "not_creator" }));
+
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ reviewPolicy: "anyone" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.details?.code).toBe("review_policy_denied");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("blocks recovery resolution from completing a review-gated issue outside in_review", async () => {

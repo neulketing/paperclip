@@ -12937,6 +12937,20 @@ export function issueRoutes(
         actor: { type: actor.actorType, id: actor.actorId },
         nextStatus: updateFields.status,
       });
+      // The review policy is the gate on agent work, so an agent may not
+      // loosen or remove it on an issue that has one.
+      if (
+        reviewPolicyChangeRequested &&
+        req.actor.type === "agent" &&
+        existing.reviewPolicy != null &&
+        existing.reviewPolicy !== "anyone"
+      ) {
+        res.status(403).json({
+          error: "Agents cannot change a restrictive review policy.",
+          details: { code: "review_policy_denied", policy: existing.reviewPolicy },
+        });
+        return;
+      }
       const shouldCancelActiveRunForCancelledStatus =
         existing.status !== "cancelled" && updateFields.status === "cancelled";
       if (resumeRequested === true && !commentBody) {
